@@ -91,6 +91,7 @@ Requires:	hdparm
 Requires:	cryptsetup
 Requires:	findutils
 Requires:	which
+Requires:	luajit
 Requires(post):	binutils
 %if 0%{with cephfs_java}
 BuildRequires:	java-devel
@@ -130,6 +131,7 @@ BuildRequires:	xfsprogs
 BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
 BuildRequires:	yasm
+BuildRequires:	luajit-devel
 
 #################################################################################
 # distro-conditional dependencies
@@ -834,6 +836,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/rados-classes/libcls_user.so*
 %{_libdir}/rados-classes/libcls_version.so*
 %{_libdir}/rados-classes/libcls_journal.so*
+%{_libdir}/rados-classes/libcls_lua.so*
 %dir %{_libdir}/ceph/erasure-code
 %{_libdir}/ceph/erasure-code/libec_*.so*
 %if 0%{?_with_lttng}

@@ -125,3 +125,22 @@ if (WITH_CEPHFS)
   add_library(cls_cephfs_client
     cephfs/cls_cephfs_client.cc)
 endif (WITH_CEPHFS)
+
+if (LUA_FOUND)
+  add_library(cls_lua SHARED
+	lua/cls_lua.cc
+	lua/cls_lua.h
+	lua/lua_bufferlist.cc
+	lua/lua_cmsgpack.c)
+  target_link_libraries(cls_lua ${LUA_LIBRARIES})
+  set_target_properties(cls_lua PROPERTIES VERSION "1.0.0" SOVERSION "1")
+  set_target_properties(cls_lua PROPERTIES COMPILE_FLAGS ${LUA_CFLAGS})
+  install(TARGETS cls_lua DESTINATION lib/rados-classes)
+
+  add_library(cls_lua_client
+	lua/cls_lua_client.cc
+	lua/lua_bufferlist.cc
+	lua/lua_cmsgpack.c
+	lua/cls_lua_client.hpp)
+  set_target_properties(cls_lua_client PROPERTIES COMPILE_FLAGS ${LUA_CFLAGS})
+endif (LUA_FOUND)

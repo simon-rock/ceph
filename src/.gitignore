@@ -99,3 +99,6 @@ Makefile
 
 # not sure what generates this...
 /ceph.tmpe
+
+/test/cls_lua/test_script.h
+/txt2str

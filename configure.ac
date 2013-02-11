@@ -1319,6 +1319,9 @@ AS_IF([test "x$with_eventfd" != xno],
                      [AC_DEFINE(HAVE_EVENTFD, 1, [Have eventfd extension.])])])
 AM_CONDITIONAL(WITH_EVENTFD, [ test "$with_eventfd" = "yes" ])
 
+PKG_CHECK_MODULES(LUA, luajit, [HAVE_LUA=1], [HAVE_LUA=0])
+AM_CONDITIONAL([HAVE_LUA], test "$HAVE_LUA" -eq 1)
+
 # Checks for typedefs, structures, and compiler characteristics.
 #AC_HEADER_STDBOOL
 #AC_C_CONST
