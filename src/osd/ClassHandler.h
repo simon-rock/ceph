@@ -24,7 +24,8 @@ public:
     cls_method_call_t func;
     cls_method_cxx_call_t cxx_func;
 
-    int exec(cls_method_context_t ctx, bufferlist& indata, bufferlist& outdata);
+    int exec(cls_method_context_t ctx, bufferlist& indata,
+        bufferlist& outdata, const string& mname);
     void unregister();
 
     int get_flags() {
@@ -59,6 +60,15 @@ public:
     ClassHandler *handler;
     void *handle;
 
+    /*
+     * lua_script: Lua script read from disk
+     * lua_handler: flag indicating this class is Lua
+     * lua_method_proxy: method that dispatches to cls_lua
+     */
+    string lua_script;
+    bool lua_handler;
+    ClassMethod lua_method_proxy;
+
     map<string, ClassMethod> methods_map;
     map<string, ClassFilter> filters_map;
 
@@ -69,7 +79,8 @@ public:
 
     ClassData() : status(CLASS_UNKNOWN), 
 		  handler(NULL),
-		  handle(NULL) {}
+		  handle(NULL),
+		  lua_handler(false) {}
     ~ClassData() { }
 
     ClassMethod *register_method(const char *mname, int flags, cls_method_call_t func);
@@ -105,6 +116,7 @@ private:
 
   ClassData *_get_class(const string& cname);
   int _load_class(ClassData *cls);
+  int _load_lua_class(ClassData *cls);
 
 public:
   ClassHandler(CephContext *cct_) : cct(cct_), mutex("ClassHandler") {}

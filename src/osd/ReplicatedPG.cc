@@ -4245,7 +4245,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	dout(10) << "call method " << cname << "." << mname << dendl;
 	int prev_rd = ctx->num_read;
 	int prev_wr = ctx->num_write;
-	result = method->exec((cls_method_context_t)&ctx, indata, outdata);
+	result = method->exec((cls_method_context_t)&ctx, indata, outdata, mname);
 
 	if (ctx->num_read > prev_rd && !(flags & CLS_METHOD_RD)) {
 	  derr << "method " << cname << "." << mname << " tried to read object but is not marked RD" << dendl;

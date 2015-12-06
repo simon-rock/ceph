@@ -102,3 +102,4 @@ Makefile
 
 /test/cls_lua/test_script.h
 /txt2str
+/lua_objclasses

@@ -6,6 +6,7 @@
 #include "osd/OSD.h"
 #include "ClassHandler.h"
 #include "common/errno.h"
+#include <fstream>
 
 #include <dlfcn.h>
 
@@ -25,6 +26,13 @@
 #define CLS_PREFIX "libcls_"
 #define CLS_SUFFIX ".so"
 
+/*
+ * Object classes can be resolved to classes defined in Lua. The naming
+ * convention for Lua files is "cls_<class-name>.lua.
+ */
+#define CLS_LUA_PREFIX "cls_"
+#define CLS_LUA_SUFFIX ".lua"
+#define CLS_LUA_MAX_SIZE 1<<20 // catch egregious mistake
 
 int ClassHandler::open_class(const string& cname, ClassData **pcls)
 {
@@ -73,7 +81,8 @@ int ClassHandler::open_all_classes()
 void ClassHandler::shutdown()
 {
   for (map<string, ClassData>::iterator p = classes.begin(); p != classes.end(); ++p) {
-    dlclose(p->second.handle);
+    if (p->second.handle)
+      dlclose(p->second.handle);
   }
   classes.clear();
 }
@@ -92,6 +101,50 @@ ClassHandler::ClassData *ClassHandler::_get_class(const string& cname)
     cls->handler = this;
   }
   return cls;
+}
+
+int ClassHandler::_load_lua_class(ClassData *cls)
+{
+  char fname[PATH_MAX];
+  snprintf(fname, sizeof(fname),
+      "%s/" CLS_LUA_PREFIX "%s" CLS_LUA_SUFFIX,
+      cct->_conf->osd_lua_class_dir.c_str(),
+      cls->name.c_str());
+  dout(10) << "_load_lua_class " << cls->name << " from " << fname << dendl;
+
+  struct stat st;
+  int r = ::stat(fname, &st);
+  if (r < 0) {
+    r = -errno;
+    dout(0) << __func__ << " could not stat class " << fname
+      << ": " << cpp_strerror(r) << dendl;
+    return r;
+  }
+
+  if (st.st_size > CLS_LUA_MAX_SIZE) {
+    dout(0) << __func__ << " lua script too big " << fname
+      << ": " << st.st_size << " bytes" << dendl;
+    return -EIO;
+  }
+
+  cls->lua_script.reserve(st.st_size);
+
+  std::ifstream ifs(fname);
+
+  cls->lua_script.assign(std::istreambuf_iterator<char>(ifs),
+      std::istreambuf_iterator<char>());
+
+  /*
+   * Mark 'lua' as a class dependency.
+   */
+  ClassData *cls_dep = _get_class("lua");
+  cls->dependencies.insert(cls_dep);
+  if (cls_dep->status != ClassData::CLASS_OPEN)
+    cls->missing_dependencies.insert(cls_dep);
+
+  cls->lua_handler = true;
+
+  return 0;
 }
 
 int ClassHandler::_load_class(ClassData *cls)
@@ -116,27 +169,37 @@ int ClassHandler::_load_class(ClassData *cls)
         r = -errno;
         dout(0) << __func__ << " could not stat class " << fname
                 << ": " << cpp_strerror(r) << dendl;
+        if (r == -ENOENT)
+          r = _load_lua_class(cls);
       } else {
 	dout(0) << "_load_class could not open class " << fname
       	        << " (dlopen failed): " << dlerror() << dendl;
       	r = -EIO;
       }
-      cls->status = ClassData::CLASS_MISSING;
-      return r;
+      // dlopen error may be cleared if Lua class found
+      if (r) {
+        cls->status = ClassData::CLASS_MISSING;
+        return r;
+      }
     }
 
-    cls_deps_t *(*cls_deps)();
-    cls_deps = (cls_deps_t *(*)())dlsym(cls->handle, "class_deps");
-    if (cls_deps) {
-      cls_deps_t *deps = cls_deps();
-      while (deps) {
-	if (!deps->name)
-	  break;
-	ClassData *cls_dep = _get_class(deps->name);
-	cls->dependencies.insert(cls_dep);
-	if (cls_dep->status != ClassData::CLASS_OPEN)
-	  cls->missing_dependencies.insert(cls_dep);
-	deps++;
+    // cls->handle may be NULL here when the class resolved to a Lua script,
+    // and classes defined in Lua don't currently support specification of
+    // class dependencies.
+    if (cls->handle) {
+      cls_deps_t *(*cls_deps)();
+      cls_deps = (cls_deps_t *(*)())dlsym(cls->handle, "class_deps");
+      if (cls_deps) {
+        cls_deps_t *deps = cls_deps();
+        while (deps) {
+          if (!deps->name)
+            break;
+          ClassData *cls_dep = _get_class(deps->name);
+          cls->dependencies.insert(cls_dep);
+          if (cls_dep->status != ClassData::CLASS_OPEN)
+            cls->missing_dependencies.insert(cls_dep);
+          deps++;
+        }
       }
     }
   }
@@ -154,12 +217,34 @@ int ClassHandler::_load_class(ClassData *cls)
     dout(10) << "_load_class " << cls->name << " satisfied dependency " << dc->name << dendl;
     cls->missing_dependencies.erase(p++);
   }
+
+  /*
+   * A Lua class contains a statically defined method that dispatches to
+   * `cls_lua`. Here we lookup the class and stash a pointer to the target
+   * method.
+   */
+  if (cls->lua_handler) {
+    ClassHandler::ClassData *lua_cls = _get_class("lua");
+    assert(lua_cls && lua_cls->name == "lua" &&
+        lua_cls->status == ClassData::CLASS_OPEN);
+
+    ClassHandler::ClassMethod *lua_method;
+    lua_method = lua_cls->_get_method("eval_bufferlist");
+    assert(lua_method);
+
+    cls->lua_method_proxy.cxx_func = lua_method->cxx_func;
+    cls->lua_method_proxy.name = "lua_method_proxy";
+    cls->lua_method_proxy.flags = CLS_METHOD_RD | CLS_METHOD_WR;
+    cls->lua_method_proxy.cls = cls;
+  }
   
-  // initialize
-  void (*cls_init)() = (void (*)())dlsym(cls->handle, "__cls_init");
-  if (cls_init) {
-    cls->status = ClassData::CLASS_INITIALIZING;
-    cls_init();
+  // initialize (non-Lua classes)
+  if (cls->handle) {
+    void (*cls_init)() = (void (*)())dlsym(cls->handle, "__cls_init");
+    if (cls_init) {
+      cls->status = ClassData::CLASS_INITIALIZING;
+      cls_init();
+    }
   }
   
   dout(10) << "_load_class " << cls->name << " success" << dendl;
@@ -234,6 +319,8 @@ ClassHandler::ClassFilter *ClassHandler::ClassData::register_cxx_filter(
 
 ClassHandler::ClassMethod *ClassHandler::ClassData::_get_method(const char *mname)
 {
+  if (lua_handler)
+    return &lua_method_proxy;
   map<string, ClassHandler::ClassMethod>::iterator iter = methods_map.find(mname);
   if (iter == methods_map.end())
     return NULL;
@@ -277,8 +364,23 @@ void ClassHandler::ClassFilter::unregister()
   cls->unregister_filter(this);
 }
 
-int ClassHandler::ClassMethod::exec(cls_method_context_t ctx, bufferlist& indata, bufferlist& outdata)
+int ClassHandler::ClassMethod::exec(cls_method_context_t ctx,
+    bufferlist& indata, bufferlist& outdata, const string& mname)
 {
+  /*
+   * We intercept calls to a Lua handler, re-encode the parameters to include
+   * the script being executed and the virtual method name, and point the
+   * function being called at the `cls_lua` class.
+   */
+  if (cls->lua_handler) {
+    bufferlist tmp_indata;
+    ::encode(cls->lua_script, tmp_indata);
+    ::encode(mname, tmp_indata);
+    ::encode(indata, tmp_indata);
+    indata = tmp_indata;
+    assert(cxx_func); // we don't setup a C version
+  }
+
   int ret;
   if (cxx_func) {
     // C++ call version

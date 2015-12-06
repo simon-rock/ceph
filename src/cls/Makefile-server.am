@@ -94,4 +94,7 @@ libcls_lua_la_LDFLAGS = ${AM_LDFLAGS} -module -avoid-version -shared -export-sym
 radoslib_LTLIBRARIES += libcls_lua.la
 endif
 
+dist_radoslua_DATA += \
+    cls/hello/cls_hellolua.lua
+
 endif # WITH_OSD

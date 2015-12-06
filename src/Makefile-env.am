@@ -20,6 +20,7 @@ lib_LTLIBRARIES =
 noinst_LTLIBRARIES = 
 noinst_LIBRARIES =
 radoslib_LTLIBRARIES =
+dist_radoslua_DATA =
 
 # like bin_PROGRAMS, but these targets are only built for debug builds
 bin_DEBUGPROGRAMS =
@@ -86,6 +87,7 @@ AM_COMMON_CPPFLAGS = \
 	-D_GNU_SOURCE \
 	-DCEPH_LIBDIR=\"${libdir}\" \
 	-DCEPH_PKGLIBDIR=\"${pkglibdir}\" \
+	-DCEPH_DATADIR=\"${datadir}\" \
 	-DGTEST_USE_OWN_TR1_TUPLE=0
 
 if LINUX
@@ -286,4 +288,5 @@ DENCODER_DEPS =
 
 
 radoslibdir = $(libdir)/rados-classes
+radosluadir = $(datadir)/ceph/rados-classes
 

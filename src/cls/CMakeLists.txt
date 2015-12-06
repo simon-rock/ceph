@@ -143,4 +143,7 @@ if (LUA_FOUND)
 	lua/lua_cmsgpack.c
 	lua/cls_lua_client.hpp)
   set_target_properties(cls_lua_client PROPERTIES COMPILE_FLAGS ${LUA_CFLAGS})
+
+  install(FILES hello/cls_hellolua.lua
+      DESTINATION ${CMAKE_INSTALL_PREFIX}/share/ceph/rados-classes)
 endif (LUA_FOUND)

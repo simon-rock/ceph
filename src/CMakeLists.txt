@@ -9,6 +9,7 @@ set(pkgdatadir ${CMAKE_INSTALL_PREFIX}/share)
 set(prefix ${CMAKE_INSTALL_PREFIX})
 
 add_definitions("-DCEPH_LIBDIR=\"${libdir}\"")
+add_definitions("-DCEPH_DATADIR=\"${pkgdatadir}\"")
 add_definitions("-DCEPH_PKGLIBDIR=\"${libdir}\"")
 add_definitions("-DHAVE_CONFIG_H -D__CEPH__ -D_FILE_OFFSET_BITS=64 -D_REENTRANT -D_THREAD_SAFE -D__STDC_FORMAT_MACROS -D_GNU_SOURCE")
 

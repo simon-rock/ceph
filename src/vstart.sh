@@ -3,6 +3,9 @@
 # abort on failure
 set -e
 
+SRC_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SRC_ROOT="$(dirname "$SRC_ROOT")" # parent of vstart.sh
+
 if [ -e CMakeCache.txt ]; then
   # Out of tree build, learn source location from CMakeCache.txt
   SRC_ROOT=`grep Ceph_SOURCE_DIR CMakeCache.txt | cut -d "=" -f 2`
@@ -34,6 +37,8 @@ else
         [ -z $EC_PATH ] && EC_PATH=$CEPH_LIB/erasure-code
         [ -z $OBJCLASS_PATH ] && OBJCLASS_PATH=$CEPH_LIB/rados-classes
 fi
+
+[ -z $LUA_OBJCLASS_PATH ] && LUA_OBJCLASS_PATH=lua_objclasses
 
 if [ -z "${CEPH_VSTART_WRAPPER}" ]; then
     PATH=$(pwd):$PATH
@@ -348,6 +353,10 @@ test -d gmon && $SUDO rm -rf gmon/*
 
 [ "$cephx" -eq 1 ] && [ "$new" -eq 1 ] && test -e $keyring_fn && rm $keyring_fn
 
+# symlink Lua object classes
+test -d $LUA_OBJCLASS_PATH || mkdir $LUA_OBJCLASS_PATH
+$SUDO rm -rf $LUA_OBJCLASS_PATH/*
+find $SRC_ROOT/src/cls -name "*.lua" | xargs readlink -f | xargs -I {} sh -c 'ln -s "$1" $2/$(basename "$1")' - {} $LUA_OBJCLASS_PATH
 
 # figure machine's ip
 HOSTNAME=`hostname -s`
@@ -460,6 +469,7 @@ $DAEMONOPTS
         osd journal size = 100
         osd class tmp = out
         osd class dir = $OBJCLASS_PATH
+        osd lua class dir = $LUA_OBJCLASS_PATH
         osd scrub load threshold = 5.0
         osd debug op order = true
         filestore wbthrottle xfs ios start flusher = 10
