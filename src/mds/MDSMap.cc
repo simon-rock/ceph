@@ -173,7 +173,7 @@ void MDSMap::generate_test_instances(list<MDSMap*>& ls)
   ls.push_back(m);
 }
 
-void MDSMap::print(ostream& out) 
+void MDSMap::print(ostream& out) const
 {
   out << "epoch\t" << epoch << "\n";
   out << "flags\t" << hex << flags << dec << "\n";
@@ -198,17 +198,15 @@ void MDSMap::print(ostream& out)
   out << "inline_data\t" << (inline_data_enabled ? "enabled" : "disabled") << "\n";
 
   multimap< pair<mds_rank_t, unsigned>, mds_gid_t > foo;
-  for (map<mds_gid_t,mds_info_t>::iterator p = mds_info.begin();
-       p != mds_info.end();
-       ++p)
-    foo.insert(std::make_pair(std::make_pair(p->second.rank, p->second.inc-1), p->first));
+  for (const auto &p : mds_info) {
+    foo.insert(std::make_pair(
+          std::make_pair(p.second.rank, p.second.inc-1), p.first));
+  }
 
-  for (multimap< pair<mds_rank_t, unsigned>, mds_gid_t >::iterator p = foo.begin();
-       p != foo.end();
-       ++p) {
-    mds_info_t& info = mds_info[p->second];
+  for (const auto &p : foo) {
+    const mds_info_t& info = mds_info.at(p.second);
     
-    out << p->second << ":\t"
+    out << p.second << ":\t"
 	<< info.addr
 	<< " '" << info.name << "'"
 	<< " mds." << info.rank
@@ -234,7 +232,7 @@ void MDSMap::print(ostream& out)
 
 
 
-void MDSMap::print_summary(Formatter *f, ostream *out)
+void MDSMap::print_summary(Formatter *f, ostream *out) const
 {
   map<mds_rank_t,string> by_rank;
   map<string,int> by_state;
@@ -250,22 +248,20 @@ void MDSMap::print_summary(Formatter *f, ostream *out)
 
   if (f)
     f->open_array_section("by_rank");
-  for (map<mds_gid_t,mds_info_t>::iterator p = mds_info.begin();
-       p != mds_info.end();
-       ++p) {
-    string s = ceph_mds_state_name(p->second.state);
-    if (p->second.laggy())
+  for (const auto &p : mds_info) {
+    string s = ceph_mds_state_name(p.second.state);
+    if (p.second.laggy())
       s += "(laggy or crashed)";
 
-    if (p->second.rank >= 0) {
+    if (p.second.rank >= 0) {
       if (f) {
 	f->open_object_section("mds");
-	f->dump_unsigned("rank", p->second.rank);
-	f->dump_string("name", p->second.name);
+	f->dump_unsigned("rank", p.second.rank);
+	f->dump_string("name", p.second.name);
 	f->dump_string("status", s);
 	f->close_section();
       } else {
-	by_rank[p->second.rank] = p->second.name + "=" + s;
+	by_rank[p.second.rank] = p.second.name + "=" + s;
       }
     } else {
       by_state[s]++;

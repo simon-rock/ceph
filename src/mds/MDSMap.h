@@ -212,6 +212,8 @@ public:
   CompatSet compat;
 
   friend class MDSMonitor;
+  friend class Filesystem;
+  friend class FSMap;
 
 public:
   MDSMap() 
@@ -272,7 +274,6 @@ public:
 
   const std::set<int64_t> &get_data_pools() const { return data_pools; }
   int64_t get_first_data_pool() const { return *data_pools.begin(); }
-  int64_t get_cas_pool() const { return cas_pool; }
   int64_t get_metadata_pool() const { return metadata_pool; }
   bool is_data_pool(int64_t poolid) const {
     return data_pools.count(poolid);
@@ -282,16 +283,15 @@ public:
     return get_enabled() && (is_data_pool(poolid) || metadata_pool == poolid);
   }
 
-  const std::map<mds_gid_t,mds_info_t>& get_mds_info() { return mds_info; }
-  const mds_info_t& get_mds_info_gid(mds_gid_t gid) {
-    assert(mds_info.count(gid));
-    return mds_info[gid];
+  const std::map<mds_gid_t,mds_info_t>& get_mds_info() const { return mds_info; }
+  const mds_info_t& get_mds_info_gid(mds_gid_t gid) const {
+    return mds_info.at(gid);
   }
-  const mds_info_t& get_mds_info(mds_rank_t m) {
-    assert(up.count(m) && mds_info.count(up[m]));
-    return mds_info[up[m]];
+  const mds_info_t& get_mds_info(mds_rank_t m) const {
+    assert(up.count(m) && mds_info.count(up.at(m)));
+    return mds_info.at(up.at(m));
   }
-  mds_gid_t find_mds_gid_by_name(const std::string& s) {
+  mds_gid_t find_mds_gid_by_name(const std::string& s) const {
     for (std::map<mds_gid_t,mds_info_t>::const_iterator p = mds_info.begin();
 	 p != mds_info.end();
 	 ++p) {
@@ -303,13 +303,13 @@ public:
   }
 
   // counts
-  unsigned get_num_in_mds() {
+  unsigned get_num_in_mds() const {
     return in.size();
   }
-  unsigned get_num_up_mds() {
+  unsigned get_num_up_mds() const {
     return up.size();
   }
-  int get_num_failed_mds() {
+  int get_num_failed_mds() const {
     return failed.size();
   }
   unsigned get_num_mds(int state) const {
@@ -650,8 +650,8 @@ public:
   }
 
 
-  void print(ostream& out);
-  void print_summary(Formatter *f, ostream *out);
+  void print(ostream& out) const;
+  void print_summary(Formatter *f, ostream *out) const;
 
   void dump(Formatter *f) const;
   static void generate_test_instances(list<MDSMap*>& ls);
