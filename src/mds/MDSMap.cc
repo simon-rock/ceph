@@ -643,7 +643,6 @@ MDSMap::availability_t MDSMap::is_cluster_available() const
     return TRANSIENT_UNAVAILABLE;
   }
 
-
   // If a rank is marked damage (unavailable until operator intervenes)
   if (damaged.size()) {
     return STUCK_UNAVAILABLE;
@@ -652,26 +651,6 @@ MDSMap::availability_t MDSMap::is_cluster_available() const
   // If no ranks are created (filesystem not initialized)
   if (in.empty()) {
     return STUCK_UNAVAILABLE;
-  }
-
-  for (const auto rank : in) {
-    std::string name;
-    if (up.count(rank) != 0) {
-      name = mds_info.at(up.at(rank)).name;
-    }
-    const mds_gid_t replacement = find_replacement_for(rank, name, false);
-    const bool standby_avail = (replacement != MDS_GID_NONE);
-
-    // If the rank is unfilled, and there are no standbys, we're unavailable
-    if (up.count(rank) == 0 && !standby_avail) {
-      return STUCK_UNAVAILABLE;
-    } else if (up.count(rank) && mds_info.at(up.at(rank)).laggy() && !standby_avail) {
-      // If the daemon is laggy and there are no standbys, we're unavailable.
-      // It would be nice to give it some grace here, but to do so callers
-      // would have to poll this time-wise, vs. just waiting for updates
-      // to mdsmap, so it's not worth the complexity.
-      return STUCK_UNAVAILABLE;
-    }
   }
 
   if (get_num_mds(CEPH_MDS_STATE_ACTIVE) > 0) {

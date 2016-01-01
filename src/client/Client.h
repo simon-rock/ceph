@@ -808,6 +808,8 @@ private:
   void _release_filelocks(Fh *fh);
   void _update_lock_state(struct flock *fl, uint64_t owner, ceph_lock_state_t *lock_state);
 
+  mds_rank_t _get_random_up_mds() const;
+
 public:
   int mount(const std::string &mount_root, bool require_mds=false);
   void unmount();

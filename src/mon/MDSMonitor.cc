@@ -986,6 +986,25 @@ bool MDSMonitor::preprocess_command(MonOpRequestRef op)
 	ds << fsmap.compat;
       }
       r = 0;
+  } else if (prefix == "fs get") {
+    string fs_name;
+    cmd_getval(g_ceph_context, cmdmap, "fs_name", fs_name);
+    auto fs = pending_fsmap.get_filesystem(fs_name);
+    if (fs == nullptr) {
+      ss << "filesystem '" << fs_name << "' not found";
+      r = -ENOENT;
+    } else {
+      if (f != nullptr) {
+        f->open_object_section("filesystem");
+        fs->dump(f.get());
+        f->close_section();
+        f->flush(ds);
+        r = 0;
+      } else {
+        fs->print(ds);
+        r = 0;
+      }
+    }
   } else if (prefix == "fs ls") {
     if (f) {
       f->open_array_section("filesystems");
@@ -2426,7 +2445,7 @@ bool MDSMonitor::maybe_promote_standby(std::shared_ptr<Filesystem> fs)
               continue;   // we're supposed to follow someone else
             }
 
-            if (info.standby_for_rank == FSMap::MDS_STANDBY_ANY &&
+            if (info.standby_for_rank == MDSMap::MDS_STANDBY_ANY &&
                 try_standby_replay(info, *(fs_i.second), cand_info)) {
               do_propose = true;
               break;

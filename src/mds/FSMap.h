@@ -67,6 +67,7 @@ class Filesystem
   }
 
   void dump(Formatter *f) const;
+  void print(std::ostream& out);
 
   /**
    * Return true if a daemon is already assigned as
@@ -88,18 +89,6 @@ class Filesystem
 WRITE_CLASS_ENCODER(Filesystem)
 
 class FSMap {
-public:
-
-  // indicate startup standby preferences for MDS
-  // of course, if they have a specific rank to follow, they just set that!
-  static const mds_rank_t MDS_NO_STANDBY_PREF; // doesn't have instructions to do anything
-  static const mds_rank_t MDS_STANDBY_ANY;     // is instructed to be standby-replay, may
-                                               // or may not have specific name to follow
-  static const mds_rank_t MDS_STANDBY_NAME;    // standby for a named MDS
-  static const mds_rank_t MDS_MATCHED_ACTIVE;  // has a matched standby, which if up
-                                               // it should follow, but otherwise should
-                                               // be assigned a rank
-
 protected:
   epoch_t epoch;
   uint64_t next_filesystem_id;
@@ -142,6 +131,9 @@ public:
     }
   }
 
+  /**
+   * Get state of all daemons (for all filesystems, including all standbys)
+   */
   std::map<mds_gid_t, MDSMap::mds_info_t> get_mds_info() const
   {
     std::map<mds_gid_t, MDSMap::mds_info_t> result;
@@ -197,11 +189,17 @@ public:
     return NULL;
   }
 
+  /**
+   * Does a daemon exist with this GID?
+   */
   bool gid_exists(mds_gid_t gid) const
   {
     return mds_roles.count(gid) == 0;
   }
 
+  /**
+   * Does a daemon with this GID exist, *and* have an MDS rank assigned?
+   */
   bool gid_has_rank(mds_gid_t gid) const
   {
     return gid_exists(gid) && mds_roles.at(gid) != MDS_NAMESPACE_NONE;
@@ -301,6 +299,10 @@ public:
     }
   }
 
+  /**
+   * Mutator helper for Filesystem objects: expose a non-const
+   * Filesystem pointer to `fn` and update epochs appropriately.
+   */
   void modify_filesystem(
       const mds_namespace_t ns,
       std::function<void(std::shared_ptr<Filesystem> )> fn)
@@ -308,6 +310,26 @@ public:
     auto fs = filesystems.at(ns);
     fn(fs);
     fs->mds_map.epoch = epoch;
+  }
+
+  /**
+   * Apply a mutation to the mds_info_t structure for a particular
+   * daemon (identified by GID), and make appropriate updates to epochs.
+   */
+  void modify_daemon(
+      mds_gid_t who,
+      std::function<void(MDSMap::mds_info_t *info)> fn)
+  {
+    if (mds_roles.at(who) == MDS_NAMESPACE_NONE) {
+      fn(&standby_daemons.at(who));
+      standby_epochs[who] = epoch;
+    } else {
+      auto fs = filesystems[mds_roles.at(who)];
+      auto &info = fs->mds_map.mds_info.at(who);
+      fn(&info);
+
+      fs->mds_map.epoch = epoch;
+    }
   }
 
   /**
@@ -440,25 +462,7 @@ public:
     }
   }
 
-  /**
-   * Apply a mutation to the mds_info_t structure for a particular
-   * daemon (identified by GID), and make appropriate updates to epochs.
-   */
-  void modify_daemon(
-      mds_gid_t who,
-      std::function<void(MDSMap::mds_info_t *info)> fn)
-  {
-    if (mds_roles.at(who) == MDS_NAMESPACE_NONE) {
-      fn(&standby_daemons.at(who));
-      standby_epochs[who] = epoch;
-    } else {
-      auto fs = filesystems[mds_roles.at(who)];
-      auto &info = fs->mds_map.mds_info.at(who);
-      fn(&info);
 
-      fs->mds_map.epoch = epoch;
-    }
-  }
 
   std::shared_ptr<Filesystem> get_legacy_filesystem()
   {
@@ -514,17 +518,6 @@ public:
     return false;
   }
 
-#if 0
-  const MDSMap::mds_info_t& get_mds_info(mds_role_t role) {
-    assert(filesystems.count(role.ns));
-    const auto &fs = filesystems.at(role.ns); 
-    assert(fs->up.count(role.rank) && mds_info.count(fs->up[role.rank]));
-    return mds_info[fs->up[role.rank]];
-  }
-#endif
-
-
-
   // FIXME: standby_for_rank is bogus now because it doesn't say which filesystem
   // this fn needs reworking to respect filesystem priorities and not have
   // a lower priority filesystem stealing MDSs needed by a higher priority
@@ -574,9 +567,10 @@ public:
       if (info.laggy() || info.rank >= 0)
         continue;
 
-      if ((info.standby_for_rank == MDS_NO_STANDBY_PREF ||
-           info.standby_for_rank == MDS_MATCHED_ACTIVE ||
-           (info.standby_for_rank == MDS_STANDBY_ANY && force_standby_active))) {
+      if ((info.standby_for_rank == MDSMap::MDS_NO_STANDBY_PREF ||
+           info.standby_for_rank == MDSMap::MDS_MATCHED_ACTIVE ||
+           (info.standby_for_rank == MDSMap::MDS_STANDBY_ANY
+            && force_standby_active))) {
         return gid;
       }
     }
@@ -595,51 +589,6 @@ public:
   void get_health(list<pair<health_status_t,std::string> >& summary,
 		  list<pair<health_status_t,std::string> > *detail) const;
 
-  // mds states
-
-
-#if 0
-  /**
-   * Get MDS daemon status by GID
-   */
-  MDSMap::DaemonState get_state_gid(mds_gid_t gid) const {
-    std::map<mds_gid_t,MDSMap::mds_info_t>::const_iterator i = mds_info.find(gid);
-    if (i == mds_info.end()) {
-      return MDSMap::STATE_NULL;
-    }
-    return i->second.state;
-  }
-
-
-  //MDSMap::mds_info_t& get_info(mds_rank_t m) { assert(up.count(m)); return mds_info[up[m]]; }
-
-
-  bool is_laggy_gid(mds_gid_t gid) const {
-    if (!mds_info.count(gid))
-      return false;
-    std::map<mds_gid_t,MDSMap::mds_info_t>::const_iterator p = mds_info.find(gid);
-    return p->second.laggy();
-  }
-
-  bool is_degraded(mds_namespace_t ns) const {   // degraded = some recovery in process.  fixes active membership and recovery_set.
-    if (filesystems.count(ns) == 0) {
-      // This namespace doesn't exist, so it isn't degraded
-      return false;
-    }
-
-    if (!filesystems.at(ns)->failed.empty() || !filesystems.at(ns)->damaged.empty()) {
-      return true;
-    }
-    for (auto &p : mds_info) {
-      if (p.second.role.ns == ns && p.second.state >= MDSMap::STATE_REPLAY && p.second.state <= MDSMap::STATE_CLIENTREPLAY) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-#endif
-
   std::shared_ptr<Filesystem> get_filesystem(const std::string &name)
   {
     for (auto &i : filesystems) {
@@ -652,153 +601,8 @@ public:
   }
 
   /**
-   * Get whether a rank is 'up', i.e. has
-   * an MDS daemon's entity_inst_t associated
-   * with it.
-   */
-#if 0
-  bool have_inst(mds_role_t r) const {
-    const auto fs = filesystems.at(r.ns);
-    return fs->up.count(r.rank);
-  }
-
-  /**
-   * Get the MDS daemon entity_inst_t for a rank
-   * known to be up.
-   */
-  const entity_inst_t get_inst(mds_role_t r) const {
-    const auto fs = filesystems.at(r.ns);
-    return mds_info.at(fs->up.at(r.rank)).get_inst();
-  }
-  const entity_addr_t get_addr(mds_role_t r) const {
-    const auto fs = filesystems.at(r.ns);
-    assert(fs->up.count(r.rank));
-    return mds_info.at(fs->up.at(r.rank)).addr;
-  }
-#endif
-
-  /**
    * Get MDS rank state if the rank is up, else MDSMap::STATE_NULL
    */
-#if 0
-  MDSMap::DaemonState get_state(mds_role_t r) const {
-    const auto fs = get_filesystem(r.ns);
-    const auto u = fs->up.find(r.rank);
-    if (u == fs->up.end()) {
-      return MDSMap::STATE_NULL;
-    }
-    return get_state_gid(u->second);
-  }
-
-  void get_recovery_mds_set(mds_namespace_t ns, std::set<mds_rank_t>& s) const {
-    std::shared_ptr<const Filesystem> fs = filesystems.at(ns);
-    s = fs->failed;
-    for (const auto i : fs->up) {
-      auto &gid = i.second;
-      auto &info = mds_info.at(gid);
-      if (info.role.ns == ns && info.state >= MDSMap::STATE_REPLAY
-                             && info.state <= MDSMap::STATE_STOPPING) {
-        s.insert(info.rank);
-      }
-    }
-  }
-
-  void get_clientreplay_or_active_or_stopping_mds_set(mds_namespace_t ns,
-      std::set<mds_rank_t>& s) const {
-    for (auto p : mds_info) {
-      auto info = p.second;
-      if (info.role.ns == ns && info.state >= MDSMap::STATE_CLIENTREPLAY
-                             && info.state <= MDSMap::STATE_STOPPING) {
-        s.insert(info.rank);
-      }
-    }
-  }
-  void get_mds_set(mds_namespace_t ns,
-      std::set<mds_rank_t>& s, MDSMap::DaemonState state) const {
-    for (auto p : mds_info) {
-      auto info = p.second;
-      if (info.role.ns == ns && info.state == state) {
-        s.insert(info.rank);
-      }
-    }
-  } 
-  void get_active_mds_set(mds_namespace_t ns, std::set<mds_rank_t>& s) const {
-    get_mds_set(ns, s, MDSMap::STATE_ACTIVE);
-  }
-
-  /**
-   * How many of the MDSs assigned to this namespace are in this state?
-   */
-  unsigned get_num_mds(std::shared_ptr<const Filesystem> fs, int state) const {
-    unsigned n = 0;
-    for (const auto & p : fs->up) {
-      const auto &gid = p.second;
-      const auto &info = mds_info.at(gid);
-      if (info.state == state) {
-        ++n;
-      }
-    }
-    return n;
-  }
-
-  bool is_resolving(mds_namespace_t ns) const {
-    const auto &fs = filesystems.at(ns);
-    return
-      get_num_mds(fs, MDSMap::STATE_RESOLVE) > 0 &&
-      get_num_mds(fs, MDSMap::STATE_REPLAY) == 0 &&
-      fs->failed.empty();
-  }
-
-  bool is_rejoining(mds_namespace_t ns) const {  
-    const auto &fs = filesystems.at(ns);
-    // nodes are rejoining cache state
-    return 
-      get_num_mds(fs, MDSMap::STATE_REJOIN) > 0 &&
-      get_num_mds(fs, MDSMap::STATE_REPLAY) == 0 &&
-      get_num_mds(fs, MDSMap::STATE_RECONNECT) == 0 &&
-      get_num_mds(fs, MDSMap::STATE_RESOLVE) == 0 &&
-      fs->failed.empty();
-  }
-
-
-  bool is_boot(mds_role_t r) const { return get_state(r) == MDSMap::STATE_BOOT; }
-  bool is_creating(mds_role_t r) const { return get_state(r) == MDSMap::STATE_CREATING; }
-  bool is_starting(mds_role_t r) const { return get_state(r) == MDSMap::STATE_STARTING; }
-  bool is_replay(mds_role_t r) const   { return get_state(r) == MDSMap::STATE_REPLAY; }
-  bool is_resolve(mds_role_t r) const  { return get_state(r) == MDSMap::STATE_RESOLVE; }
-  bool is_reconnect(mds_role_t r) const { return get_state(r) == MDSMap::STATE_RECONNECT; }
-  bool is_rejoin(mds_role_t r) const   { return get_state(r) == MDSMap::STATE_REJOIN; }
-  bool is_clientreplay(mds_role_t r) const { return get_state(r) == MDSMap::STATE_CLIENTREPLAY; }
-  bool is_active(mds_role_t r) const  { return get_state(r) == MDSMap::STATE_ACTIVE; }
-  bool is_stopping(mds_role_t r) const { return get_state(r) == MDSMap::STATE_STOPPING; }
-  bool is_active_or_stopping(mds_role_t r) const {
-    return is_active(r) || is_stopping(r);
-  }
-  bool is_clientreplay_or_active_or_stopping(mds_role_t r) const {
-    return is_clientreplay(r) || is_active(r) || is_stopping(r);
-  }
-
-  bool is_followable(mds_role_t r) const {
-    return (is_resolve(r) ||
-	    is_replay(r) ||
-	    is_rejoin(r) ||
-	    is_clientreplay(r) ||
-	    is_active(r) ||
-	    is_stopping(r));
-  }
-
-  mds_role_t get_role_gid(mds_gid_t gid) {
-    if (mds_info.count(gid))
-      return mds_info[gid].role;
-    return mds_role_t();
-  }
-
-  int get_inc_gid(mds_gid_t gid) {
-    if (mds_info.count(gid))
-      return mds_info[gid].inc;
-    return -1;
-  }
-#endif
   void encode(bufferlist& bl, uint64_t features) const;
   void decode(bufferlist::iterator& p);
   void decode(bufferlist& bl) {

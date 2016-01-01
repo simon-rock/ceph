@@ -387,6 +387,9 @@ COMMAND("fs reset " \
 COMMAND("fs ls ", \
 	"list filesystems", \
 	"fs", "r", "cli,rest")
+COMMAND("fs get name=fs_name,type=CephString", \
+	"get info about one filesystem", \
+	"fs", "r", "cli,rest")
 /*
  * Monmap commands
  */

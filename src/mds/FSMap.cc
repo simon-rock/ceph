@@ -24,7 +24,7 @@ void Filesystem::dump(Formatter *f) const
   f->open_object_section("mdsmap");
   mds_map.dump(f);
   f->close_section();
-  f->dump_int("ns", ns);
+  f->dump_int("id", ns);
 }
 
 void FSMap::dump(Formatter *f) const
@@ -383,5 +383,13 @@ int FSMap::parse_filesystem(
     *result = get_filesystem(ns);
     return 0;
   }
+}
+
+void Filesystem::print(std::ostream &out)
+{
+  // TODO add a non-json print?
+  JSONFormatter f;
+  dump(&f);
+  f.flush(out);
 }
 

@@ -334,19 +334,19 @@ public:
   }
 
   // sets
-  void get_mds_set(std::set<mds_rank_t>& s) {
+  void get_mds_set(std::set<mds_rank_t>& s) const {
     s = in;
   }
-  void get_up_mds_set(std::set<mds_rank_t>& s) {
+  void get_up_mds_set(std::set<mds_rank_t>& s) const {
     for (std::map<mds_rank_t, mds_gid_t>::const_iterator p = up.begin();
 	 p != up.end();
 	 ++p)
       s.insert(p->first);
   }
-  void get_active_mds_set(std::set<mds_rank_t>& s) {
+  void get_active_mds_set(std::set<mds_rank_t>& s) const {
     get_mds_set(s, MDSMap::STATE_ACTIVE);
   }
-  void get_failed_mds_set(std::set<mds_rank_t>& s) {
+  void get_failed_mds_set(std::set<mds_rank_t>& s) const {
     s = failed;
   }
 
@@ -382,79 +382,13 @@ public:
       if (p->second.state >= STATE_CLIENTREPLAY && p->second.state <= STATE_STOPPING)
 	s.insert(p->second.rank);
   }
-  void get_mds_set(std::set<mds_rank_t>& s, DaemonState state) {
+  void get_mds_set(std::set<mds_rank_t>& s, DaemonState state) const {
     for (std::map<mds_gid_t, mds_info_t>::const_iterator p = mds_info.begin();
 	 p != mds_info.end();
 	 ++p)
       if (p->second.state == state)
 	s.insert(p->second.rank);
   } 
-
-  int get_random_up_mds() {
-    if (up.empty())
-      return -1;
-    std::map<mds_rank_t, mds_gid_t>::iterator p = up.begin();
-    for (int n = rand() % up.size(); n; n--)
-      ++p;
-    return p->first;
-  }
-
-  const mds_info_t* find_by_name(const std::string& name) const {
-    for (std::map<mds_gid_t, mds_info_t>::const_iterator p = mds_info.begin();
-	 p != mds_info.end();
-	 ++p) {
-      if (p->second.name == name)
-	return &p->second;
-    }
-    return NULL;
-  }
-
-  mds_gid_t find_standby_for(mds_rank_t mds, std::string& name) const {
-    std::map<mds_gid_t, mds_info_t>::const_iterator generic_standby
-      = mds_info.end();
-    for (std::map<mds_gid_t, mds_info_t>::const_iterator p = mds_info.begin();
-	 p != mds_info.end();
-	 ++p) {
-      if ((p->second.state != MDSMap::STATE_STANDBY && p->second.state != MDSMap::STATE_STANDBY_REPLAY) ||
-	  p->second.laggy() ||
-	  p->second.rank >= 0)
-	continue;
-      if (p->second.standby_for_rank == mds || (name.length() && p->second.standby_for_name == name))
-	return p->first;
-      if (p->second.standby_for_rank < 0 && p->second.standby_for_name.length() == 0)
-	generic_standby = p;
-    }
-    if (generic_standby != mds_info.end())
-      return generic_standby->first;
-    return MDS_GID_NONE;
-  }
-
-  mds_gid_t find_unused_for(mds_rank_t mds, std::string& name,
-                            bool force_standby_active) const {
-    for (std::map<mds_gid_t,mds_info_t>::const_iterator p = mds_info.begin();
-         p != mds_info.end();
-         ++p) {
-      if (p->second.state != MDSMap::STATE_STANDBY ||
-          p->second.laggy() ||
-          p->second.rank >= 0)
-        continue;
-      if ((p->second.standby_for_rank == MDS_NO_STANDBY_PREF ||
-           p->second.standby_for_rank == MDS_MATCHED_ACTIVE ||
-           (p->second.standby_for_rank == MDS_STANDBY_ANY && force_standby_active))) {
-        return p->first;
-      }
-    }
-    return MDS_GID_NONE;
-  }
-
-  mds_gid_t find_replacement_for(mds_rank_t mds, std::string& name,
-                                 bool force_standby_active) const {
-    const mds_gid_t standby = find_standby_for(mds, name);
-    if (standby)
-      return standby;
-    else
-      return find_unused_for(mds, name, force_standby_active);
-  }
 
   void get_health(list<pair<health_status_t,std::string> >& summary,
 		  list<pair<health_status_t,std::string> > *detail) const;
@@ -516,8 +450,12 @@ public:
     return i->second.state;
   }
 
-  mds_info_t& get_info(mds_rank_t m) { assert(up.count(m)); return mds_info[up[m]]; }
-  mds_info_t& get_info_gid(mds_gid_t gid) { assert(mds_info.count(gid)); return mds_info[gid]; }
+  const mds_info_t& get_info(const mds_rank_t m) {
+    return mds_info.at(up.at(m));
+  }
+  const mds_info_t& get_info_gid(const mds_gid_t gid) {
+    return mds_info.at(gid);
+  }
 
   bool is_boot(mds_rank_t m) const { return get_state(m) == STATE_BOOT; }
   bool is_creating(mds_rank_t m) const { return get_state(m) == STATE_CREATING; }
@@ -552,12 +490,16 @@ public:
     return p->second.laggy();
   }
 
-
+#if 0
   // cluster states
   bool is_full() const {
     return mds_rank_t(in.size()) >= max_mds;
   }
-  bool is_degraded() const {   // degraded = some recovery in process.  fixes active membership and recovery_set.
+#endif
+
+  // degraded = some recovery in process.  fixes active membership and
+  // recovery_set.
+  bool is_degraded() const {
     if (!failed.empty() || !damaged.empty())
       return true;
     for (std::map<mds_gid_t,mds_info_t>::const_iterator p = mds_info.begin();
@@ -626,17 +568,14 @@ public:
     return false;
   }
   
-  mds_rank_t get_rank_gid(mds_gid_t gid) {
-    if (mds_info.count(gid))
-      return mds_info[gid].rank;
-    return MDS_RANK_NONE;
+  mds_rank_t get_rank_gid(mds_gid_t gid) const {
+    if (mds_info.count(gid)) {
+      return mds_info.at(gid).rank;
+    } else {
+      return MDS_RANK_NONE;
+    }
   }
 
-  int get_inc(mds_rank_t m) {
-    if (up.count(m)) 
-      return mds_info[up[m]].inc;
-    return 0;
-  }
   int get_inc_gid(mds_gid_t gid) {
     if (mds_info.count(gid))
       return mds_info[gid].inc;
