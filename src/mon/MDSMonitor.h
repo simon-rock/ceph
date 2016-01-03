@@ -107,7 +107,10 @@ class MDSMonitor : public PaxosService {
   bool preprocess_command(MonOpRequestRef op);
   bool prepare_command(MonOpRequestRef op);
 
-  int parse_role(const std::string &role_str, mds_role_t *role);
+  int parse_role(
+      const std::string &role_str,
+      mds_role_t *role,
+      std::ostream &ss);
   int management_command(
       MonOpRequestRef op,
       std::string const &prefix,

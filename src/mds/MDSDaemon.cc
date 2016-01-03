@@ -943,8 +943,15 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
           timer, beacon, mdsmap, messenger, monc, objecter,
           new C_VoidFn(this, &MDSDaemon::respawn),
           new C_VoidFn(this, &MDSDaemon::suicide));
+
       dout(10) <<  __func__ << ": initializing MDS rank "
                << mds_rank->get_nodeid() << dendl;
+
+      dout(10) << "Map at initialization:\n";
+      mdsmap->print(*_dout);
+      *_dout << dendl;
+      
+
       mds_rank->init();
     }
 

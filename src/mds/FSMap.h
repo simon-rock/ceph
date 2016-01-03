@@ -67,7 +67,7 @@ class Filesystem
   }
 
   void dump(Formatter *f) const;
-  void print(std::ostream& out);
+  void print(std::ostream& out) const;
 
   /**
    * Return true if a daemon is already assigned as
@@ -112,7 +112,8 @@ public:
   FSMap() 
     : epoch(0),
       next_filesystem_id(MDS_NAMESPACE_ANONYMOUS + 1),
-      legacy_client_namespace(MDS_NAMESPACE_NONE)
+      legacy_client_namespace(MDS_NAMESPACE_NONE),
+      compat(get_mdsmap_compat_set_default())
   { }
 
   FSMap(const FSMap &rhs)
@@ -130,6 +131,8 @@ public:
       filesystems[fs->ns] = std::make_shared<Filesystem>(*fs);
     }
   }
+
+  const CompatSet &get_compat() const {return compat;}
 
   /**
    * Get state of all daemons (for all filesystems, including all standbys)
@@ -194,7 +197,7 @@ public:
    */
   bool gid_exists(mds_gid_t gid) const
   {
-    return mds_roles.count(gid) == 0;
+    return mds_roles.count(gid) > 0;
   }
 
   /**
@@ -208,96 +211,46 @@ public:
   /**
    * Insert a new MDS daemon, as a standby
    */
-  void insert(const MDSMap::mds_info_t &new_info)
-  {
-    mds_roles[new_info.global_id] = MDS_NAMESPACE_NONE;
-    standby_daemons[new_info.global_id] = new_info;
-    standby_epochs[new_info.global_id] = epoch;
-  }
+  void insert(const MDSMap::mds_info_t &new_info);
+
+  /**
+   * Assign an MDS cluster standby replay rank to a standby daemon
+   */
+  void assign_standby_replay(
+      const mds_gid_t standby_gid,
+      const mds_namespace_t leader_ns,
+      const mds_rank_t leader_rank);
+
+  /**
+   * Assign an MDS cluster rank to a standby daemon
+   */
+  void promote(
+      mds_gid_t standby_gid,
+      std::shared_ptr<Filesystem> filesystem,
+      mds_rank_t assigned_rank);
 
   /**
    * A daemon reports that it is STATE_STOPPED: remove it,
    * and the rank it held.
    */
-  void stop(mds_gid_t who)
-  {
-    assert(mds_roles.at(who) != MDS_NAMESPACE_NONE);
-    auto fs = filesystems.at(mds_roles.at(who));
-    const auto &info = fs->mds_map.mds_info.at(who);
-    fs->mds_map.up.erase(info.rank);
-    fs->mds_map.in.erase(info.rank);
-    fs->mds_map.stopped.insert(info.rank);
-
-    fs->mds_map.mds_info.erase(who);
-    mds_roles.erase(who);
-
-    fs->mds_map.epoch = epoch;
-  }
+  void stop(mds_gid_t who);
 
   /**
-   * The rank held by 'who', if any, is to be relinquished.
+   * The rank held by 'who', if any, is to be relinquished, and
+   * the state for the daemon GID is to be forgotten.
    */
-  void erase(mds_gid_t who, epoch_t blacklist_epoch)
-  {
-    if (mds_roles.at(who) == MDS_NAMESPACE_NONE) {
-      standby_daemons.erase(who);
-      standby_epochs.erase(who);
-    } else {
-      auto fs = filesystems.at(mds_roles.at(who));
-      const auto &info = fs->mds_map.mds_info.at(who);
-      if (info.state == MDSMap::STATE_CREATING) {
-        // If this gid didn't make it past CREATING, then forget
-        // the rank ever existed so that next time it's handed out
-        // to a gid it'll go back into CREATING.
-        fs->mds_map.in.erase(info.rank);
-      } else {
-        // Put this rank into the failed list so that the next available
-        // STANDBY will pick it up.
-        fs->mds_map.failed.insert(info.rank);
-      }
-      fs->mds_map.up.erase(who);
-      fs->mds_map.mds_info.erase(who);
-      fs->mds_map.last_failure_osd_epoch = blacklist_epoch;
-      fs->mds_map.epoch = epoch;
-    }
-
-    mds_roles.erase(who);
-  }
+  void erase(mds_gid_t who, epoch_t blacklist_epoch);
 
   /**
-   * The rank held by 'who' is damaged
+   * Update to indicate that the rank held by 'who' is damaged
    */
-  void damaged(mds_gid_t who, epoch_t blacklist_epoch)
-  {
-    assert(mds_roles.at(who) != MDS_NAMESPACE_NONE);
-    auto fs = filesystems.at(mds_roles.at(who));
-    mds_rank_t rank = fs->mds_map.mds_info[who].rank;
-
-    fs->mds_map.last_failure_osd_epoch = blacklist_epoch;
-    fs->mds_map.up.erase(who);
-    fs->mds_map.damaged.insert(rank);
-
-    mds_roles.erase(who);
-
-    fs->mds_map.epoch = epoch;
-  }
+  void damaged(mds_gid_t who, epoch_t blacklist_epoch);
 
   /**
-   * The rank `rank` is to be removed from the damaged list.
+   * Update to indicate that the rank `rank` is to be removed
+   * from the damaged list of the filesystem `ns`
    */
-  bool undamaged(const mds_namespace_t ns, const mds_rank_t rank)
-  {
-    auto fs = filesystems.at(ns);
-
-    if (fs->mds_map.damaged.count(rank)) {
-      fs->mds_map.damaged.erase(rank);
-      fs->mds_map.failed.insert(rank);
-      fs->mds_map.epoch = epoch;
-      return true;
-    } else {
-      return false;
-    }
-  }
+  bool undamaged(const mds_namespace_t ns, const mds_rank_t rank);
 
   /**
    * Mutator helper for Filesystem objects: expose a non-const
@@ -346,104 +299,6 @@ public:
     }
   }
 
-  void assign_standby_replay(
-      const mds_gid_t standby_gid,
-      const mds_namespace_t leader_ns,
-      const mds_rank_t leader_rank)
-  {
-    assert(mds_roles.at(standby_gid) == MDS_NAMESPACE_NONE);
-    assert(gid_exists(standby_gid));
-    assert(!gid_has_rank(standby_gid));
-    assert(standby_daemons.count(standby_gid));
-
-    // Insert to the filesystem
-    auto fs = filesystems.at(leader_ns);
-    fs->mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
-    fs->mds_map.mds_info[standby_gid].standby_for_rank = leader_rank;
-    fs->mds_map.mds_info[standby_gid].state = MDSMap::STATE_STANDBY_REPLAY;
-
-    // Remove from the list of standbys
-    standby_daemons.erase(standby_gid);
-    standby_epochs.erase(standby_gid);
-
-    // Indicate that Filesystem has been modified
-    fs->mds_map.epoch = epoch;
-  }
-
-  /**
-   * Assign an MDS cluster rank to a standby daemon
-   */
-  void promote(
-      mds_gid_t standby_gid,
-      std::shared_ptr<Filesystem> filesystem,
-      mds_rank_t assigned_rank)
-  {
-    assert(mds_roles.at(standby_gid) == MDS_NAMESPACE_NONE);
-    assert(gid_exists(standby_gid));
-    assert(!gid_has_rank(standby_gid));
-    assert(standby_daemons.count(standby_gid));
-
-    MDSMap &mds_map = filesystem->mds_map;
-
-    // Insert daemon state to Filesystem
-    mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
-    MDSMap::mds_info_t &info = mds_map.mds_info[standby_gid];
-
-    if (mds_map.stopped.count(assigned_rank)) {
-      // The cluster is being expanded with a stopped rank
-      info.state = MDSMap::STATE_STARTING;
-      mds_map.stopped.erase(assigned_rank);
-    } else if (!mds_map.is_in(assigned_rank)) {
-      // The cluster is being expanded with a new rank
-      info.state = MDSMap::STATE_CREATING;
-    } else {
-      // An existing rank is being assigned to a replacement
-      info.state = MDSMap::STATE_REPLAY;
-      mds_map.failed.erase(assigned_rank);
-    }
-    info.rank = assigned_rank;
-    info.inc = ++mds_map.inc[assigned_rank];
-
-    // Update the rank state in Filesystem
-    mds_map.in.insert(assigned_rank);
-    mds_map.up[assigned_rank] = standby_gid;
-
-    // Remove from the list of standbys
-    standby_daemons.erase(standby_gid);
-    standby_epochs.erase(standby_gid);
-
-    // Indicate that Filesystem has been modified
-    mds_map.epoch = epoch;
-  }
-
-  /**
-   * Update the state & state_seq for an MDS daemon, as a result
-   * of notification from that daemon.
-   */
-  void update_state(
-      mds_gid_t who,
-      MDSMap::DaemonState state,
-      version_t state_seq)
-  {
-    modify_daemon(who, [state, state_seq](MDSMap::mds_info_t *info) {
-        info->state = state;
-        info->state_seq = state_seq;
-    });
-  }
-
-  /**
-   * Forcibly set the state for a daemon, as a result of
-   * an administrative request.
-   */
-  void force_state(
-      const mds_gid_t who,
-      const MDSMap::DaemonState state)
-  {
-    modify_daemon(who, [state](MDSMap::mds_info_t *info) {
-        info->state = state;
-    });
-  }
-
   /**
    * A daemon has told us it's compat, and it's too new
    * for the one we had previously.  Impose the new one
@@ -457,14 +312,13 @@ public:
     // track the compat versions for standby daemons.
     compat = c;
     for (auto i : filesystems) {
-      i.second->mds_map.compat = c;
-      i.second->mds_map.epoch = epoch;
+      MDSMap &mds_map = i.second->mds_map;
+      mds_map.compat = c;
+      mds_map.epoch = epoch;
     }
   }
 
-
-
-  std::shared_ptr<Filesystem> get_legacy_filesystem()
+  std::shared_ptr<const Filesystem> get_legacy_filesystem()
   {
     if (legacy_client_namespace == MDS_NAMESPACE_NONE) {
       return nullptr;
@@ -518,78 +372,18 @@ public:
     return false;
   }
 
-  // FIXME: standby_for_rank is bogus now because it doesn't say which filesystem
-  // this fn needs reworking to respect filesystem priorities and not have
-  // a lower priority filesystem stealing MDSs needed by a higher priority
-  // filesystem
-  //
-  // Speaking of... as well as having some filesystems higher priority, we need
-  // policies like "I require at least one standby MDS", so that even when a
-  // standby is available, a lower prio filesystem won't use it if that would
-  // mean putting a higher priority filesystem into a non-redundant state.
-  // Could be option of "require one MDS is standby" or "require one MDS
-  // is exclusive standby" so as to distinguish the case where two filesystems
-  // means two standbys vs where two filesystems means one standby
-  mds_gid_t find_standby_for(mds_rank_t mds, const std::string& name) const
-  {
-    mds_gid_t result = MDS_GID_NONE;
-
-    for (const auto &i : standby_daemons) {
-      const auto &gid = i.first;
-      const auto &info = i.second;
-      assert(info.state == MDSMap::STATE_STANDBY
-             || info.state == MDSMap::STATE_STANDBY_REPLAY);
-      assert(info.rank != MDS_RANK_NONE);
-
-      if (info.laggy()) {
-        continue;
-      }
-
-      if (info.standby_for_rank == mds || (name.length() && info.standby_for_name == name)) {
-        // It's a named standby for *me*, use it.
-	return gid;
-      } else if (info.standby_for_rank < 0 && info.standby_for_name.length() == 0)
-        // It's not a named standby for anyone, use it if we don't find
-        // a named standby for me later.
-	result = gid;
-    }
-
-    return result;
-  }
+  mds_gid_t find_standby_for(mds_rank_t mds, const std::string& name) const;
 
   mds_gid_t find_unused_for(mds_rank_t mds, const std::string& name,
-                            bool force_standby_active) const {
-    for (const auto &i : standby_daemons) {
-      const auto &gid = i.first;
-      const auto &info = i.second;
-      assert(info.state == MDSMap::STATE_STANDBY);
-
-      if (info.laggy() || info.rank >= 0)
-        continue;
-
-      if ((info.standby_for_rank == MDSMap::MDS_NO_STANDBY_PREF ||
-           info.standby_for_rank == MDSMap::MDS_MATCHED_ACTIVE ||
-           (info.standby_for_rank == MDSMap::MDS_STANDBY_ANY
-            && force_standby_active))) {
-        return gid;
-      }
-    }
-    return MDS_GID_NONE;
-  }
+                            bool force_standby_active) const;
 
   mds_gid_t find_replacement_for(mds_rank_t mds, const std::string& name,
-                                 bool force_standby_active) const {
-    const mds_gid_t standby = find_standby_for(mds, name);
-    if (standby)
-      return standby;
-    else
-      return find_unused_for(mds, name, force_standby_active);
-  }
+                                 bool force_standby_active) const;
 
   void get_health(list<pair<health_status_t,std::string> >& summary,
 		  list<pair<health_status_t,std::string> > *detail) const;
 
-  std::shared_ptr<Filesystem> get_filesystem(const std::string &name)
+  std::shared_ptr<const Filesystem> get_filesystem(const std::string &name) const
   {
     for (auto &i : filesystems) {
       if (i.second->mds_map.fs_name == name) {
@@ -601,8 +395,11 @@ public:
   }
 
   /**
-   * Get MDS rank state if the rank is up, else MDSMap::STATE_NULL
+   * Assert that the FSMap, Filesystem, MDSMap, mds_info_t relations are
+   * all self-consistent.
    */
+  void sanity() const;
+
   void encode(bufferlist& bl, uint64_t features) const;
   void decode(bufferlist::iterator& p);
   void decode(bufferlist& bl) {
@@ -610,8 +407,7 @@ public:
     decode(p);
   }
 
-
-  void print(ostream& out);
+  void print(ostream& out) const;
   void print_summary(Formatter *f, ostream *out);
 
   void dump(Formatter *f) const;

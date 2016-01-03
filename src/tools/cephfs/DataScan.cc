@@ -260,7 +260,7 @@ int DataScan::main(const std::vector<const char*> &args)
   } else if (command == "scan_frags") {
     return scan_frags();
   } else if (command == "init") {
-    return driver->init_roots(fs->get_first_data_pool());
+    return driver->init_roots(fs->mds_map.get_first_data_pool());
   } else {
     std::cerr << "Unknown command '" << command << "'" << std::endl;
     return -EINVAL;

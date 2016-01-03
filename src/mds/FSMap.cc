@@ -35,18 +35,20 @@ void FSMap::dump(Formatter *f) const
   compat.dump(f);
   f->close_section();
 
-  f->open_object_section("standbys");
+  f->open_array_section("standbys");
   for (const auto &i : standby_daemons) {
     f->open_object_section("info");
     i.second.dump(f);
-    f->close_section();
     f->dump_int("epoch", standby_epochs.at(i.first));
+    f->close_section();
   }
   f->close_section();
 
-  f->open_object_section("filesystems");
+  f->open_array_section("filesystems");
   for (const auto fs : filesystems) {
+    f->open_object_section("filesystem");
     fs.second->dump(f);
+    f->close_section();
   }
   f->close_section();
 }
@@ -71,10 +73,10 @@ void FSMap::generate_test_instances(list<FSMap*>& ls)
   ls.push_back(m);
 }
 
-void FSMap::print(ostream& out) 
+void FSMap::print(ostream& out) const
 {
   // TODO add a non-json print?
-  JSONFormatter f;
+  JSONFormatter f(true);
   dump(&f);
   f.flush(out);
 }
@@ -385,11 +387,269 @@ int FSMap::parse_filesystem(
   }
 }
 
-void Filesystem::print(std::ostream &out)
+void Filesystem::print(std::ostream &out) const
 {
   // TODO add a non-json print?
   JSONFormatter f;
   dump(&f);
   f.flush(out);
+}
+
+mds_gid_t FSMap::find_standby_for(mds_rank_t mds, const std::string& name) const
+{
+  mds_gid_t result = MDS_GID_NONE;
+
+  for (const auto &i : standby_daemons) {
+    const auto &gid = i.first;
+    const auto &info = i.second;
+    assert(info.state == MDSMap::STATE_STANDBY);
+    assert(info.rank == MDS_RANK_NONE);
+
+    if (info.laggy()) {
+      continue;
+    }
+
+    if (info.standby_for_rank == mds || (name.length() && info.standby_for_name == name)) {
+      // It's a named standby for *me*, use it.
+      return gid;
+    } else if (info.standby_for_rank < 0 && info.standby_for_name.length() == 0)
+      // It's not a named standby for anyone, use it if we don't find
+      // a named standby for me later.
+      result = gid;
+  }
+
+  return result;
+}
+
+mds_gid_t FSMap::find_unused_for(mds_rank_t mds, const std::string& name,
+                          bool force_standby_active) const {
+  for (const auto &i : standby_daemons) {
+    const auto &gid = i.first;
+    const auto &info = i.second;
+    assert(info.state == MDSMap::STATE_STANDBY);
+
+    if (info.laggy() || info.rank >= 0)
+      continue;
+
+    if ((info.standby_for_rank == MDSMap::MDS_NO_STANDBY_PREF ||
+         info.standby_for_rank == MDSMap::MDS_MATCHED_ACTIVE ||
+         (info.standby_for_rank == MDSMap::MDS_STANDBY_ANY
+          && force_standby_active))) {
+      return gid;
+    }
+  }
+  return MDS_GID_NONE;
+}
+
+mds_gid_t FSMap::find_replacement_for(mds_rank_t mds, const std::string& name,
+                               bool force_standby_active) const {
+  const mds_gid_t standby = find_standby_for(mds, name);
+  if (standby)
+    return standby;
+  else
+    return find_unused_for(mds, name, force_standby_active);
+}
+
+void FSMap::sanity() const
+{
+  if (legacy_client_namespace != MDS_NAMESPACE_NONE) {
+    assert(filesystems.count(legacy_client_namespace) == 1);
+  }
+
+  for (const auto &i : filesystems) {
+    auto fs = i.second;
+    assert(fs->mds_map.compat.compare(compat) == 0);
+    assert(fs->ns == i.first);
+    for (const auto &j : fs->mds_map.mds_info) {
+      assert(j.second.rank != MDS_RANK_NONE);
+      assert(mds_roles.count(j.first) == 1);
+      assert(standby_daemons.count(j.first) == 0);
+      assert(standby_epochs.count(j.first) == 0);
+      assert(mds_roles.at(j.first) == i.first);
+      if (j.second.state != MDSMap::STATE_STANDBY_REPLAY) {
+        assert(fs->mds_map.up.at(j.second.rank) == j.first);
+      }
+    }
+
+    for (const auto &j : fs->mds_map.up) {
+      mds_rank_t rank = j.first;
+      assert(fs->mds_map.in.count(rank) == 1);
+      mds_gid_t gid = j.second;
+      assert(fs->mds_map.mds_info.count(gid) == 1);
+    }
+  }
+
+  for (const auto &i : standby_daemons) {
+    assert(i.second.state == MDSMap::STATE_STANDBY);
+    assert(i.second.rank == MDS_RANK_NONE);
+    assert(i.second.global_id == i.first);
+    assert(standby_epochs.count(i.first) == 1);
+    assert(mds_roles.count(i.first) == 1);
+    assert(mds_roles.at(i.first) == MDS_NAMESPACE_NONE);
+  }
+
+  for (const auto &i : standby_epochs) {
+    assert(standby_daemons.count(i.first) == 1);
+  }
+
+  for (const auto &i : mds_roles) {
+    if (i.second == MDS_NAMESPACE_NONE) {
+      assert(standby_daemons.count(i.first) == 1);
+    } else {
+      assert(filesystems.count(i.second) == 1);
+      assert(filesystems.at(i.second)->mds_map.mds_info.count(i.first) == 1);
+    }
+  }
+}
+
+void FSMap::promote(
+    mds_gid_t standby_gid,
+    std::shared_ptr<Filesystem> filesystem,
+    mds_rank_t assigned_rank)
+{
+  assert(mds_roles.at(standby_gid) == MDS_NAMESPACE_NONE);
+  assert(gid_exists(standby_gid));
+  assert(!gid_has_rank(standby_gid));
+  assert(standby_daemons.count(standby_gid));
+
+  MDSMap &mds_map = filesystem->mds_map;
+
+  // Insert daemon state to Filesystem
+  mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
+  MDSMap::mds_info_t &info = mds_map.mds_info[standby_gid];
+
+  if (mds_map.stopped.count(assigned_rank)) {
+    // The cluster is being expanded with a stopped rank
+    info.state = MDSMap::STATE_STARTING;
+    mds_map.stopped.erase(assigned_rank);
+  } else if (!mds_map.is_in(assigned_rank)) {
+    // The cluster is being expanded with a new rank
+    info.state = MDSMap::STATE_CREATING;
+  } else {
+    // An existing rank is being assigned to a replacement
+    info.state = MDSMap::STATE_REPLAY;
+    mds_map.failed.erase(assigned_rank);
+  }
+  info.rank = assigned_rank;
+  info.inc = ++mds_map.inc[assigned_rank];
+  mds_roles[standby_gid] = filesystem->ns;
+
+  // Update the rank state in Filesystem
+  mds_map.in.insert(assigned_rank);
+  mds_map.up[assigned_rank] = standby_gid;
+
+  // Remove from the list of standbys
+  standby_daemons.erase(standby_gid);
+  standby_epochs.erase(standby_gid);
+
+  // Indicate that Filesystem has been modified
+  mds_map.epoch = epoch;
+}
+
+void FSMap::assign_standby_replay(
+    const mds_gid_t standby_gid,
+    const mds_namespace_t leader_ns,
+    const mds_rank_t leader_rank)
+{
+  assert(mds_roles.at(standby_gid) == MDS_NAMESPACE_NONE);
+  assert(gid_exists(standby_gid));
+  assert(!gid_has_rank(standby_gid));
+  assert(standby_daemons.count(standby_gid));
+
+  // Insert to the filesystem
+  auto fs = filesystems.at(leader_ns);
+  fs->mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
+  fs->mds_map.mds_info[standby_gid].standby_for_rank = leader_rank;
+  fs->mds_map.mds_info[standby_gid].state = MDSMap::STATE_STANDBY_REPLAY;
+
+  // Remove from the list of standbys
+  standby_daemons.erase(standby_gid);
+  standby_epochs.erase(standby_gid);
+
+  // Indicate that Filesystem has been modified
+  fs->mds_map.epoch = epoch;
+}
+
+void FSMap::erase(mds_gid_t who, epoch_t blacklist_epoch)
+{
+  if (mds_roles.at(who) == MDS_NAMESPACE_NONE) {
+    standby_daemons.erase(who);
+    standby_epochs.erase(who);
+  } else {
+    auto fs = filesystems.at(mds_roles.at(who));
+    const auto &info = fs->mds_map.mds_info.at(who);
+    if (info.state == MDSMap::STATE_CREATING) {
+      // If this gid didn't make it past CREATING, then forget
+      // the rank ever existed so that next time it's handed out
+      // to a gid it'll go back into CREATING.
+      fs->mds_map.in.erase(info.rank);
+    } else {
+      // Put this rank into the failed list so that the next available
+      // STANDBY will pick it up.
+      fs->mds_map.failed.insert(info.rank);
+    }
+    if (info.state != MDSMap::STATE_STANDBY_REPLAY) {
+      assert(fs->mds_map.up.at(info.rank) == info.global_id);
+      fs->mds_map.up.erase(info.rank);
+    }
+    fs->mds_map.mds_info.erase(who);
+    fs->mds_map.last_failure_osd_epoch = blacklist_epoch;
+    fs->mds_map.epoch = epoch;
+  }
+
+  mds_roles.erase(who);
+}
+
+void FSMap::damaged(mds_gid_t who, epoch_t blacklist_epoch)
+{
+  assert(mds_roles.at(who) != MDS_NAMESPACE_NONE);
+  auto fs = filesystems.at(mds_roles.at(who));
+  mds_rank_t rank = fs->mds_map.mds_info[who].rank;
+
+  erase(who, blacklist_epoch);
+  fs->mds_map.failed.erase(rank);
+  fs->mds_map.damaged.insert(rank);
+
+  assert(fs->mds_map.epoch == epoch);
+}
+
+/**
+ * Update to indicate that the rank `rank` is to be removed
+ * from the damaged list of the filesystem `ns`
+ */
+bool FSMap::undamaged(const mds_namespace_t ns, const mds_rank_t rank)
+{
+  auto fs = filesystems.at(ns);
+
+  if (fs->mds_map.damaged.count(rank)) {
+    fs->mds_map.damaged.erase(rank);
+    fs->mds_map.failed.insert(rank);
+    fs->mds_map.epoch = epoch;
+    return true;
+  } else {
+    return false;
+  }
+}
+
+void FSMap::insert(const MDSMap::mds_info_t &new_info)
+{
+  mds_roles[new_info.global_id] = MDS_NAMESPACE_NONE;
+  standby_daemons[new_info.global_id] = new_info;
+  standby_epochs[new_info.global_id] = epoch;
+}
+
+void FSMap::stop(mds_gid_t who)
+{
+  assert(mds_roles.at(who) != MDS_NAMESPACE_NONE);
+  auto fs = filesystems.at(mds_roles.at(who));
+  const auto &info = fs->mds_map.mds_info.at(who);
+  fs->mds_map.up.erase(info.rank);
+  fs->mds_map.in.erase(info.rank);
+  fs->mds_map.stopped.insert(info.rank);
+
+  fs->mds_map.mds_info.erase(who);
+  mds_roles.erase(who);
+
+  fs->mds_map.epoch = epoch;
 }
 

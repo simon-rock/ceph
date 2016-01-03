@@ -239,11 +239,14 @@ public:
     return utime_t(session_timeout,0);
   }
   uint64_t get_max_filesize() { return max_file_size; }
+  void set_max_filesize(uint64_t m) { max_file_size = m; }
   
   int get_flags() const { return flags; }
   int test_flag(int f) const { return flags & f; }
   void set_flag(int f) { flags |= f; }
   void clear_flag(int f) { flags &= ~f; }
+
+  const std::string &get_fs_name() const {return fs_name;}
 
   void set_snaps_allowed() {
     set_flag(CEPH_MDSMAP_ALLOW_SNAPS);

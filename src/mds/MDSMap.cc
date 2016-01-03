@@ -175,6 +175,7 @@ void MDSMap::generate_test_instances(list<MDSMap*>& ls)
 
 void MDSMap::print(ostream& out) const
 {
+  out << "fs_name\t" << fs_name << "\n";
   out << "epoch\t" << epoch << "\n";
   out << "flags\t" << hex << flags << dec << "\n";
   out << "created\t" << created << "\n";
@@ -638,8 +639,9 @@ void MDSMap::decode(bufferlist::iterator& p)
 MDSMap::availability_t MDSMap::is_cluster_available() const
 {
   if (epoch == 0) {
-    // This is ambiguous between "mds map was never initialized on mons" and
-    // "we never got an mdsmap from the mons".  Treat it like the latter.
+    // If I'm a client, this means I'm looking at an MDSMap instance
+    // that was never actually initialized from the mons.  Client should
+    // wait.
     return TRANSIENT_UNAVAILABLE;
   }
 
@@ -653,6 +655,15 @@ MDSMap::availability_t MDSMap::is_cluster_available() const
     return STUCK_UNAVAILABLE;
   }
 
+  for (const auto rank : in) {                                                  
+  if (up.count(rank) && mds_info.at(up.at(rank)).laggy()) {
+    // This might only be transient, but because we can't see
+    // standbys, we have no way of knowing whether there is a
+    // standby available to replace the laggy guy.
+    return STUCK_UNAVAILABLE;                                                 
+  }                                                                           
+}   
+
   if (get_num_mds(CEPH_MDS_STATE_ACTIVE) > 0) {
     // Nobody looks stuck, so indicate to client they should go ahead
     // and try mounting if anybody is active.  This may include e.g.
@@ -662,6 +673,11 @@ MDSMap::availability_t MDSMap::is_cluster_available() const
     return AVAILABLE;
   } else {
     // Nothing indicating we were stuck, but nobody active (yet)
-    return TRANSIENT_UNAVAILABLE;
+    //return TRANSIENT_UNAVAILABLE;
+
+    // Because we don't have standbys in the MDSMap any more, we can't
+    // reliably indicate transient vs. stuck, so always say stuck so
+    // that the client doesn't block.
+    return STUCK_UNAVAILABLE;
   }
 }
