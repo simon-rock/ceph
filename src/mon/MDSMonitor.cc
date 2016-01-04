@@ -283,6 +283,7 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
   mds_gid_t gid = m->get_global_id();
   version_t seq = m->get_seq();
   MDSMap::mds_info_t info;
+  epoch_t effective_epoch = 0;
 
   // check privileges, ignore if fails
   MonSession *session = m->get_session();
@@ -346,7 +347,6 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
   // Work out the latest epoch that this daemon should have seen
   {
     mds_namespace_t ns = pending_fsmap.mds_roles.at(gid);
-    epoch_t effective_epoch = 0;
     if (ns == MDS_NAMESPACE_NONE) {
       effective_epoch = fsmap.standby_epochs.at(gid);
     } else {
@@ -388,15 +388,15 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
     }
     
 
+#if 0
     // FIXME: for standby-replay for rank we should be told know
     // by the MDS daemon which filesystem it wants.  i.e. this shouldn't
     // be standby-for-rank it should be standby-for-role
     // ALSO: don't let someone go into standby replay if cluster DOWN flag set
-#if 0
-    mds_namespace_t ns = MDS_NAMESPACE_ANONYMOUS;
     if (info.state == MDSMap::STATE_STANDBY &&
 	(state == MDSMap::STATE_STANDBY_REPLAY ||
-	    state == MDSMap::STATE_ONESHOT_REPLAY) &&
+	    state == MDSMap::STATE_ONESHOT_REPLAY)) {
+      if(
 	(pending_fsmap.is_degraded() ||
 	 ((m->get_standby_for_rank() >= 0) &&
 	     pending_fsmap.get_state(m->get_standby_for_rank()) < MDSMap::STATE_ACTIVE))) {
@@ -420,10 +420,11 @@ bool MDSMonitor::preprocess_beacon(MonOpRequestRef op)
 
  reply:
   // note time and reply
+  assert(effective_epoch > 0);
   _note_beacon(m);
   mon->send_reply(op,
 		  new MMDSBeacon(mon->monmap->fsid, m->get_global_id(), m->get_name(),
-				 fsmap.get_epoch(), state, seq));
+				 effective_epoch, state, seq));
   return true;
 
  ignore:
@@ -538,19 +539,23 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
     }
 
 
-    // FIXME: reinstate standby_for_rank
-#if 0
+    // Resolve standby_for_name to a rank
+    const MDSMap::mds_info_t &info = pending_fsmap.get_info_gid(gid);
     if (!info.standby_for_name.empty()) {
-      const MDSMap::mds_info_t *leaderinfo = fsmap.find_by_name(info.standby_for_name);
-      if (leaderinfo && (leaderinfo->role.rank >= 0)) {
-        info.standby_for_rank =
-            fsmap.find_by_name(info.standby_for_name)->rank;
-        if (fsmap.is_followable(info.standby_for_rank)) {
-          info.state = MDSMap::STATE_STANDBY_REPLAY;
-        }
+      const MDSMap::mds_info_t *leaderinfo = fsmap.find_by_name(
+          info.standby_for_name);
+      if (leaderinfo && (leaderinfo->rank >= 0)) {
+        auto ns = pending_fsmap.mds_roles.at(leaderinfo->global_id);
+        auto fs = pending_fsmap.get_filesystem(ns);
+        bool followable = fs->mds_map.is_followable(leaderinfo->rank);
+
+        pending_fsmap.modify_daemon(gid, [ns, leaderinfo, followable](
+              MDSMap::mds_info_t *info) {
+            info->standby_for_rank = leaderinfo->rank;
+            info->standby_for_ns = ns;
+        });
       }
     }
-#endif
 
     // initialize the beacon timer
     last_beacon[gid].stamp = ceph_clock_now(g_ceph_context);
@@ -596,36 +601,69 @@ bool MDSMonitor::prepare_beacon(MonOpRequestRef op)
       pending_fsmap.stop(gid);
       last_beacon.erase(gid);
     } else if (state == MDSMap::STATE_STANDBY_REPLAY) {
-      // FIXME reinstate standby replay
-#if 0
-      if (m->get_standby_for_rank() == FSMap::MDS_STANDBY_NAME) {
-        /* convert name to rank. If we don't have it, do nothing. The
-	 mds will stay in standby and keep requesting the state change */
+      if (m->get_standby_for_rank() == MDSMap::MDS_STANDBY_NAME) {
         dout(20) << "looking for mds " << m->get_standby_for_name()
                   << " to STANDBY_REPLAY for" << dendl;
-        const MDSMap::mds_info_t *found_mds = NULL;
-        if ((found_mds = fsmap.find_by_name(m->get_standby_for_name())) &&
-            (found_mds->rank >= 0) &&
-	    fsmap.is_followable(found_mds->rank)) {
-          info.standby_for_rank = found_mds->rank;
-          dout(10) <<" found mds " << m->get_standby_for_name()
-                       << "; it has rank " << info.standby_for_rank << dendl;
-          info.state = MDSMap::STATE_STANDBY_REPLAY;
-          info.state_seq = seq;
-        } else {
+        auto target_info = pending_fsmap.find_by_name(m->get_standby_for_name());
+        if (target_info == nullptr) {
+          // This name is unknown, do nothing, stay in standby
           return false;
         }
-      } else if (m->get_standby_for_rank() >= 0 &&
-		 fsmap.is_followable(m->get_standby_for_rank())) {
-        /* switch to standby-replay for this MDS*/
-        info.state = MDSMap::STATE_STANDBY_REPLAY;
-        info.state_seq = seq;
-        info.standby_for_rank = m->get_standby_for_rank();
+
+        auto target_ns = pending_fsmap.mds_roles.at(target_info->global_id);
+        if (target_ns == MDS_NAMESPACE_NONE) {
+          // The named daemon is not in a Filesystem, do nothing.
+          return false;
+        }
+
+        auto target_fs = pending_fsmap.get_filesystem(target_ns);
+        if (target_fs->mds_map.is_followable(info.rank)) {
+          dout(10) <<" found mds " << m->get_standby_for_name()
+                       << "; it has rank " << target_info->rank << dendl;
+          pending_fsmap.modify_daemon(info.global_id,
+              [target_info, target_ns, seq](MDSMap::mds_info_t *info) {
+            info->standby_for_rank = target_info->rank;
+            info->standby_for_ns = target_ns;
+            info->state = MDSMap::STATE_STANDBY_REPLAY;
+            info->state_seq = seq;
+          });
+        } else {
+          // The named daemon has a rank but isn't followable, do nothing
+          return false;
+        }
+      } else if (m->get_standby_for_rank() >= 0) {
+        // TODO get this from MDS message
+        // >>
+        mds_namespace_t target_ns = MDS_NAMESPACE_NONE;
+        // <<
+
+        mds_role_t target_role = {
+          target_ns == MDS_NAMESPACE_NONE ?
+            pending_fsmap.legacy_client_namespace : info.standby_for_ns,
+          m->get_standby_for_rank()};
+
+        if (target_role.ns != MDS_NAMESPACE_NONE) {
+          auto fs = pending_fsmap.get_filesystem(target_role.ns);
+          if (fs->mds_map.is_followable(target_role.rank)) {
+            pending_fsmap.modify_daemon(info.global_id,
+                [target_role, seq](MDSMap::mds_info_t *info) {
+              info->standby_for_rank = target_role.rank;
+              info->standby_for_ns = target_role.ns;
+              info->state = MDSMap::STATE_STANDBY_REPLAY;
+              info->state_seq = seq;
+            });
+          } else {
+            // We know who they want to follow, but he's not in a suitable state
+            return false;
+          }
+        } else {
+          // Couldn't resolve to a particular filesystem
+          return false;
+        }
       } else { //it's a standby for anybody, and is already in the list
         assert(pending_fsmap.get_mds_info().count(info.global_id));
         return false;
       }
-#endif
     } else if (state == MDSMap::STATE_DAMAGED) {
       if (!mon->osdmon()->is_writeable()) {
         dout(4) << __func__ << ": DAMAGED from rank " << info.rank
@@ -1507,6 +1545,12 @@ int MDSMonitor::management_command(
 
     if (pending_fsmap.legacy_client_namespace == fs->ns) {
       pending_fsmap.legacy_client_namespace = MDS_NAMESPACE_NONE;
+    }
+
+    // There may be standby_replay daemons left here
+    for (const auto &i : fs->mds_map.mds_info) {
+      assert(i.second.state == MDSMap::STATE_STANDBY_REPLAY);
+      fail_mds_gid(i.first);
     }
 
     pending_fsmap.filesystems.erase(fs->ns);
@@ -2463,7 +2507,7 @@ bool MDSMonitor::maybe_expand_cluster(std::shared_ptr<Filesystem> fs)
     while (fs->mds_map.is_in(mds)) {
       mds++;
     }
-    mds_gid_t newgid = pending_fsmap.find_replacement_for(mds, name,
+    mds_gid_t newgid = pending_fsmap.find_replacement_for({fs->ns, mds}, name,
                          g_conf->mon_force_standby_active);
     if (newgid == MDS_GID_NONE) {
       break;
@@ -2492,6 +2536,7 @@ void MDSMonitor::maybe_replace_gid(mds_gid_t gid,
   assert(osd_propose != nullptr);
 
   const MDSMap::mds_info_t info = pending_fsmap.get_info_gid(gid);
+  const auto ns = pending_fsmap.mds_roles.at(gid);
 
   dout(10) << "no beacon from " << gid << " " << info.addr << " mds."
     << info.rank << "." << info.inc
@@ -2504,7 +2549,7 @@ void MDSMonitor::maybe_replace_gid(mds_gid_t gid,
   if (info.rank >= 0 &&
       info.state != MDSMap::STATE_STANDBY &&
       info.state != MDSMap::STATE_STANDBY_REPLAY &&
-      (sgid = pending_fsmap.find_replacement_for(info.rank, info.name,
+      (sgid = pending_fsmap.find_replacement_for({ns, info.rank}, info.name,
                 g_conf->mon_force_standby_active)) != MDS_GID_NONE) {
     
     MDSMap::mds_info_t si = pending_fsmap.get_info_gid(sgid);
@@ -2554,16 +2599,18 @@ void MDSMonitor::maybe_replace_gid(mds_gid_t gid,
 
 bool MDSMonitor::maybe_promote_standby(std::shared_ptr<Filesystem> fs)
 {
+  assert(!fs->mds_map.test_flag(CEPH_MDSMAP_DOWN));
+
   bool do_propose = false;
 
   // have a standby take over?
   set<mds_rank_t> failed;
   fs->mds_map.get_failed_mds_set(failed);
-  if (!failed.empty() && !fs->mds_map.test_flag(CEPH_MDSMAP_DOWN)) {
+  if (!failed.empty()) {
     set<mds_rank_t>::iterator p = failed.begin();
     while (p != failed.end()) {
       mds_rank_t f = *p++;
-      mds_gid_t sgid = pending_fsmap.find_replacement_for(f, {},
+      mds_gid_t sgid = pending_fsmap.find_replacement_for({fs->ns, f}, {},
           g_conf->mon_force_standby_active);
       if (sgid) {
         const MDSMap::mds_info_t si = pending_fsmap.get_info_gid(sgid);
@@ -2590,15 +2637,27 @@ bool MDSMonitor::maybe_promote_standby(std::shared_ptr<Filesystem> fs)
       dout(20) << "gid " << gid << " is standby and following nobody" << dendl;
       
       // standby for someone specific?
-      // FIXME: reinstate standby_for_rank
-#if 0
       if (info.standby_for_rank >= 0) {
-	if (pending_fsmap.is_followable(info.standby_for_rank) &&
-	    try_standby_replay(info, pending_fsmap.mds_info[pending_fsmap.up[info.standby_for_rank]]))
-	  do_propose = true;
+        // The mds_info_t may or may not tell us exactly which filesystem
+        // the standby_for_rank refers to: lookup via legacy_client_namespace
+        mds_role_t target_role = {
+          info.standby_for_ns == MDS_NAMESPACE_NONE ?
+            pending_fsmap.legacy_client_namespace : info.standby_for_ns,
+          info.standby_for_rank};
+
+        // If we managed to resolve a full target role
+        if (target_role.ns != MDS_NAMESPACE_NONE) {
+          auto fs = pending_fsmap.get_filesystem(target_role.ns);
+          if (fs->mds_map.is_followable(target_role.rank)) {
+            do_propose |= try_standby_replay(
+                info,
+                *fs,
+                fs->mds_map.get_info(target_role.rank));
+          }
+        }
+
 	continue;
       }
-#endif
 
       // check everyone
       for (auto fs_i : pending_fsmap.filesystems) {
@@ -2686,7 +2745,9 @@ void MDSMonitor::tick()
 
   for (auto i : pending_fsmap.filesystems) {
     auto fs = i.second;
-    do_propose |= maybe_promote_standby(fs);
+    if (!fs->mds_map.test_flag(CEPH_MDSMAP_DOWN)) {
+      do_propose |= maybe_promote_standby(fs);
+    }
   }
 
   if (do_propose) {

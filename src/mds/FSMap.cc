@@ -77,7 +77,9 @@ void FSMap::print(ostream& out) const
 {
   // TODO add a non-json print?
   JSONFormatter f(true);
+  f.open_object_section("fsmap");
   dump(&f);
+  f.close_section();
   f.flush(out);
 }
 
@@ -395,10 +397,20 @@ void Filesystem::print(std::ostream &out) const
   f.flush(out);
 }
 
-mds_gid_t FSMap::find_standby_for(mds_rank_t mds, const std::string& name) const
+mds_gid_t FSMap::find_standby_for(mds_role_t role, const std::string& name) const
 {
   mds_gid_t result = MDS_GID_NONE;
 
+  // First see if we have a STANDBY_REPLAY
+  auto fs = get_filesystem(role.ns);
+  for (const auto &i : fs->mds_map.mds_info) {
+    const auto &info = i.second;
+    if (info.rank == role.rank && info.state == MDSMap::STATE_STANDBY_REPLAY) {
+      return info.global_id;
+    }
+  }
+
+  // See if there are any STANDBY daemons available
   for (const auto &i : standby_daemons) {
     const auto &gid = i.first;
     const auto &info = i.second;
@@ -409,7 +421,8 @@ mds_gid_t FSMap::find_standby_for(mds_rank_t mds, const std::string& name) const
       continue;
     }
 
-    if (info.standby_for_rank == mds || (name.length() && info.standby_for_name == name)) {
+    if ((info.standby_for_rank == role.rank && info.standby_for_ns == role.ns)
+        || (name.length() && info.standby_for_name == name)) {
       // It's a named standby for *me*, use it.
       return gid;
     } else if (info.standby_for_rank < 0 && info.standby_for_name.length() == 0)
@@ -421,8 +434,7 @@ mds_gid_t FSMap::find_standby_for(mds_rank_t mds, const std::string& name) const
   return result;
 }
 
-mds_gid_t FSMap::find_unused_for(mds_rank_t mds, const std::string& name,
-                          bool force_standby_active) const {
+mds_gid_t FSMap::find_unused(bool force_standby_active) const {
   for (const auto &i : standby_daemons) {
     const auto &gid = i.first;
     const auto &info = i.second;
@@ -441,13 +453,13 @@ mds_gid_t FSMap::find_unused_for(mds_rank_t mds, const std::string& name,
   return MDS_GID_NONE;
 }
 
-mds_gid_t FSMap::find_replacement_for(mds_rank_t mds, const std::string& name,
+mds_gid_t FSMap::find_replacement_for(mds_role_t role, const std::string& name,
                                bool force_standby_active) const {
-  const mds_gid_t standby = find_standby_for(mds, name);
+  const mds_gid_t standby = find_standby_for(role, name);
   if (standby)
     return standby;
   else
-    return find_unused_for(mds, name, force_standby_active);
+    return find_unused(force_standby_active);
 }
 
 void FSMap::sanity() const
@@ -507,15 +519,23 @@ void FSMap::promote(
     std::shared_ptr<Filesystem> filesystem,
     mds_rank_t assigned_rank)
 {
-  assert(mds_roles.at(standby_gid) == MDS_NAMESPACE_NONE);
   assert(gid_exists(standby_gid));
-  assert(!gid_has_rank(standby_gid));
-  assert(standby_daemons.count(standby_gid));
+  bool is_standby_replay = mds_roles.at(standby_gid) != MDS_NAMESPACE_NONE;
+  if (!is_standby_replay) {
+    assert(standby_daemons.count(standby_gid));
+    assert(standby_daemons.at(standby_gid).state == MDSMap::STATE_STANDBY);
+  }
 
   MDSMap &mds_map = filesystem->mds_map;
 
   // Insert daemon state to Filesystem
-  mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
+  if (!is_standby_replay) {
+    mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
+  } else {
+    assert(mds_map.mds_info.count(standby_gid));
+    assert(mds_map.mds_info.at(standby_gid).state == MDSMap::STATE_STANDBY_REPLAY);
+    assert(mds_map.mds_info.at(standby_gid).rank == assigned_rank);
+  }
   MDSMap::mds_info_t &info = mds_map.mds_info[standby_gid];
 
   if (mds_map.stopped.count(assigned_rank)) {
@@ -539,8 +559,10 @@ void FSMap::promote(
   mds_map.up[assigned_rank] = standby_gid;
 
   // Remove from the list of standbys
-  standby_daemons.erase(standby_gid);
-  standby_epochs.erase(standby_gid);
+  if (!is_standby_replay) {
+    standby_daemons.erase(standby_gid);
+    standby_epochs.erase(standby_gid);
+  }
 
   // Indicate that Filesystem has been modified
   mds_map.epoch = epoch;
@@ -559,8 +581,9 @@ void FSMap::assign_standby_replay(
   // Insert to the filesystem
   auto fs = filesystems.at(leader_ns);
   fs->mds_map.mds_info[standby_gid] = standby_daemons.at(standby_gid);
-  fs->mds_map.mds_info[standby_gid].standby_for_rank = leader_rank;
+  fs->mds_map.mds_info[standby_gid].rank = leader_rank;
   fs->mds_map.mds_info[standby_gid].state = MDSMap::STATE_STANDBY_REPLAY;
+  mds_roles[standby_gid] = leader_ns;
 
   // Remove from the list of standbys
   standby_daemons.erase(standby_gid);

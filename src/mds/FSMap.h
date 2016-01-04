@@ -189,7 +189,7 @@ public:
       }
     }
 
-    return NULL;
+    return nullptr;
   }
 
   /**
@@ -372,12 +372,11 @@ public:
     return false;
   }
 
-  mds_gid_t find_standby_for(mds_rank_t mds, const std::string& name) const;
+  mds_gid_t find_standby_for(mds_role_t mds, const std::string& name) const;
 
-  mds_gid_t find_unused_for(mds_rank_t mds, const std::string& name,
-                            bool force_standby_active) const;
+  mds_gid_t find_unused(bool force_standby_active) const;
 
-  mds_gid_t find_replacement_for(mds_rank_t mds, const std::string& name,
+  mds_gid_t find_replacement_for(mds_role_t mds, const std::string& name,
                                  bool force_standby_active) const;
 
   void get_health(list<pair<health_status_t,std::string> >& summary,

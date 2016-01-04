@@ -139,10 +139,13 @@ public:
     utime_t laggy_since;
     mds_rank_t standby_for_rank;
     std::string standby_for_name;
+    mds_namespace_t standby_for_ns;
     std::set<mds_rank_t> export_targets;
 
     mds_info_t() : global_id(MDS_GID_NONE), rank(MDS_RANK_NONE), inc(0), state(STATE_STANDBY), state_seq(0),
-		   standby_for_rank(MDS_NO_STANDBY_PREF) { }
+		   standby_for_rank(MDS_NO_STANDBY_PREF),
+                   standby_for_ns(MDS_NAMESPACE_NONE)
+    { }
 
     bool laggy() const { return !(laggy_since == utime_t()); }
     void clear_laggy() { laggy_since = utime_t(); }
@@ -492,13 +495,6 @@ public:
     std::map<mds_gid_t,mds_info_t>::const_iterator p = mds_info.find(gid);
     return p->second.laggy();
   }
-
-#if 0
-  // cluster states
-  bool is_full() const {
-    return mds_rank_t(in.size()) >= max_mds;
-  }
-#endif
 
   // degraded = some recovery in process.  fixes active membership and
   // recovery_set.
