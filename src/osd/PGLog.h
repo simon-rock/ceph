@@ -194,6 +194,13 @@ struct PGLog : DoutPrefixProvider {
       }
     }
 
+    void reset_rollback_info_trimmed_to_riter() {
+      rollback_info_trimmed_to_riter = log.rbegin();
+      while (rollback_info_trimmed_to_riter != log.rend() &&
+	     rollback_info_trimmed_to_riter->version > rollback_info_trimmed_to)
+	++rollback_info_trimmed_to_riter;
+    }
+
     void index() {
       objects.clear();
       caller_ops.clear();
@@ -214,10 +221,7 @@ struct PGLog : DoutPrefixProvider {
 	}
       }
 
-      rollback_info_trimmed_to_riter = log.rbegin();
-      while (rollback_info_trimmed_to_riter != log.rend() &&
-	     rollback_info_trimmed_to_riter->version > rollback_info_trimmed_to)
-	++rollback_info_trimmed_to_riter;
+      reset_rollback_info_trimmed_to_riter();
     }
 
     void index(pg_log_entry_t& e) {
@@ -681,6 +685,9 @@ public:
       missing,
       rollbacker,
       this);
+    if (!entries.empty()) {
+      mark_writeout_from(entries.begin()->version);
+    }
   }
 
   void write_log(ObjectStore::Transaction& t,

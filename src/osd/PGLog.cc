@@ -593,6 +593,8 @@ void PGLog::append_log_entries_update_missing(
 	rollbacker->remove(p->soid);
     }
   }
+  if (log)
+    log->reset_rollback_info_trimmed_to_riter();
 }
 
 void PGLog::merge_log(ObjectStore::Transaction& t,
