@@ -9396,6 +9396,7 @@ void ReplicatedPG::mark_all_unfound_lost(int what)
 	  pg_log_entry_t::LOST_REVERT, oid, v,
 	  m->second.need, 0, osd_reqid_t(), mtime);
 	e.reverting_to = prev;
+	e.mod_desc.mark_unrollbackable();
 	log_entries.push_back(e);
 	dout(10) << e << dendl;
 
@@ -9404,7 +9405,6 @@ void ReplicatedPG::mark_all_unfound_lost(int what)
 	missing_loc.revise_need(oid, v);
 	break;
       }
-      /** fall-thru **/
 
     case pg_log_entry_t::LOST_DELETE:
       {
@@ -9413,6 +9413,11 @@ void ReplicatedPG::mark_all_unfound_lost(int what)
 		     0, osd_reqid_t(), mtime);
 	log_entries.push_back(e);
 	dout(10) << e << dendl;
+	if (pool.info.require_rollback()) {
+	  e.mod_desc.rmobject(v.version);
+	} else {
+	  e.mod_desc.mark_unrollbackable();
+	}
 
 	++m;
 	missing_loc.recovered(oid);

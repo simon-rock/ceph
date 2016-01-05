@@ -484,6 +484,11 @@
      ) = 0;
 
 
+   void stash(
+     const hobject_t &hoid,
+     version_t v,
+     ObjectStore::Transaction *t);
+
    void rollback(
      const hobject_t &hoid,
      const ObjectModDesc &desc,

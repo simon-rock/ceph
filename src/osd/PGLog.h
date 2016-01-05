@@ -43,6 +43,9 @@ struct PGLog : DoutPrefixProvider {
       const pg_log_entry_t &entry) = 0;
     virtual void remove(
       const hobject_t &hoid) = 0;
+    virtual void stash(
+      const hobject_t &entry,
+      version_t v) = 0;
     virtual void trim(
       const pg_log_entry_t &entry) = 0;
     virtual ~LogEntryHandler() {}

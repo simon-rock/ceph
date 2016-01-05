@@ -915,10 +915,14 @@ public:
     list<pg_log_entry_t> to_rollback;
     set<hobject_t, hobject_t::BitwiseComparator> to_remove;
     list<pg_log_entry_t> to_trim;
+    list<pair<hobject_t, version_t> > to_stash;
     
     // LogEntryHandler
     void remove(const hobject_t &hoid) {
       to_remove.insert(hoid);
+    }
+    void stash(const hobject_t &hoid, version_t v) {
+      to_stash.push_back(make_pair(hoid, v));
     }
     void rollback(const pg_log_entry_t &entry) {
       to_rollback.push_back(entry);
@@ -935,6 +939,11 @@ public:
 	pg->get_pgbackend()->rollback(j->soid, j->mod_desc, t);
 	SnapRollBacker rollbacker(j->soid, pg, t);
 	j->mod_desc.visit(&rollbacker);
+      }
+      for (list<pair<hobject_t, version_t> >::iterator i = to_stash.begin();
+	   i != to_stash.end();
+	   ++i) {
+	pg->get_pgbackend()->stash(i->first, i->second, t);
       }
       for (set<hobject_t, hobject_t::BitwiseComparator>::iterator i = to_remove.begin();
 	   i != to_remove.end();

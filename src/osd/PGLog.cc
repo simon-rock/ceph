@@ -589,8 +589,14 @@ void PGLog::append_log_entries_update_missing(
     }
     if (cmp(p->soid, last_backfill, last_backfill_bitwise) <= 0) {
       missing.add_next_event(*p);
-      if (p->is_delete() && rollbacker)
-	rollbacker->remove(p->soid);
+      if (rollbacker) {
+	// hack to match PG::mark_all_unfound_lost
+	if (p->is_lost_delete() && p->mod_desc.can_rollback() && rollbacker) {
+	  rollbacker->stash(p->soid, p->version.version);
+	} else if (p->is_delete()) {
+	  rollbacker->remove(p->soid);
+	}
+      }
     }
   }
   if (log)
