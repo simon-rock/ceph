@@ -45,6 +45,8 @@ BlockDevice::BlockDevice(aio_callback_t cb, void *cbpriv)
     size(0), block_size(0),
     fs(NULL), aio(false), dio(false),
     debug_lock("BlockDevice::debug_lock"),
+    ioc_reap_lock("BlockDevice::ioc_reap_lock"),
+    flush_lock("BlockDevice::flush_lock"),
     aio_queue(g_conf->bdev_aio_max_queue_depth),
     aio_callback(cb),
     aio_callback_priv(cbpriv),
@@ -164,7 +166,15 @@ void BlockDevice::close()
 
 int BlockDevice::flush()
 {
+  // serialize flushers, so that we can avoid weird io_since_flush
+  // races (w/ multipler flushers).
+  Mutex::Locker l(flush_lock);
+  if (io_since_flush.read() == 0) {
+    dout(10) << __func__ << " no-op (no ios since last flush)" << dendl;
+    return 0;
+  }
   dout(10) << __func__ << " start" << dendl;
+  io_since_flush.set(0);
   if (g_conf->bdev_inject_crash) {
     // sleep for a moment to give other threads a chance to submit or
     // wait on io that races with a flush.
@@ -246,6 +256,15 @@ void BlockDevice::_aio_thread()
 	  }
 	}
       }
+    }
+    if (ioc_reap_count.read()) {
+      Mutex::Locker l(ioc_reap_lock);
+      for (auto p : ioc_reap_queue) {
+	dout(20) << __func__ << " reap ioc " << p << dendl;
+	delete p;
+      }
+      ioc_reap_queue.clear();
+      ioc_reap_count.dec();
     }
   }
   dout(10) << __func__ << " end" << dendl;
@@ -394,7 +413,13 @@ int BlockDevice::aio_write(
       derr << __func__ << " pwritev error: " << cpp_strerror(r) << dendl;
       return r;
     }
+    if (buffered) {
+      // initiate IO (but do not wait)
+      ::sync_file_range(fd_buffered, off, len, SYNC_FILE_RANGE_WRITE);
+    }
   }
+
+  io_since_flush.set(1);
   return 0;
 }
 
@@ -464,6 +489,30 @@ int BlockDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   return r < 0 ? r : 0;
 }
 
+int BlockDevice::read_buffered(uint64_t off, uint64_t len, char *buf)
+{
+  dout(5) << __func__ << " " << off << "~" << len << dendl;
+  assert(len > 0);
+  assert(off < size);
+  assert(off + len <= size);
+
+  int r = ::pread(fd_buffered, buf, len, off);
+  if (r < 0) {
+    r = -errno;
+    goto out;
+  }
+  assert(r == len);
+
+  dout(40) << "data: ";
+  bufferlist bl;
+  bl.append(buf, len);
+  bl.hexdump(*_dout);
+  *_dout << dendl;
+
+ out:
+  return r < 0 ? r : 0;
+}
+
 int BlockDevice::invalidate_cache(uint64_t off, uint64_t len)
 {
   dout(5) << __func__ << " " << off << "~" << len << dendl;
@@ -476,4 +525,12 @@ int BlockDevice::invalidate_cache(uint64_t off, uint64_t len)
 	 << cpp_strerror(r) << dendl;
   }
   return r;
+}
+
+void BlockDevice::queue_reap_ioc(IOContext *ioc)
+{
+  Mutex::Locker l(ioc_reap_lock);
+  if (ioc_reap_count.read() == 0)
+    ioc_reap_count.inc();
+  ioc_reap_queue.push_back(ioc);
 }

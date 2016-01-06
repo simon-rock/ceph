@@ -897,6 +897,7 @@ int BlueStore::_read_bdev_label(string path, bluestore_bdev_label_t *label)
   }
   catch (buffer::error& e) {
     derr << __func__ << " unable to decode label at offset " << p.get_off()
+	 << ": " << e.what()
 	 << dendl;
     return -EINVAL;
   }
@@ -1021,6 +1022,7 @@ int BlueStore::_open_fsid(bool create)
 int BlueStore::_read_fsid(uuid_d *uuid)
 {
   char fsid_str[40];
+  memset(fsid_str, 0, sizeof(fsid_str));
   int ret = safe_read(fsid_fd, fsid_str, sizeof(fsid_str));
   if (ret < 0) {
     derr << __func__ << " failed: " << cpp_strerror(ret) << dendl;
@@ -1598,6 +1600,8 @@ int BlueStore::mkfs()
       ::encode(bluefs_extents, bl);
       t->set(PREFIX_SUPER, "bluefs_extents", bl);
       dout(20) << __func__ << " bluefs_extents " << bluefs_extents << dendl;
+    } else {
+      reserved = BLUEFS_START;
     }
     fm->release(reserved, bdev->get_size() - reserved, t);
     db->submit_transaction_sync(t);
@@ -1834,8 +1838,8 @@ int BlueStore::fsck()
   if (r < 0)
     goto out_alloc;
 
+  used_blocks.insert(0, BLUEFS_START);
   if (bluefs) {
-    used_blocks.insert(0, BLUEFS_START);
     used_blocks.insert(bluefs_extents);
     r = bluefs->fsck();
     if (r < 0)
@@ -2527,9 +2531,11 @@ int BlueStore::fiemap(
 	++bp;
       continue;
     }
-    // we are seeing a hole, time to add an entry to fiemap.
-    m[start] = offset - start;
-    dout(20) << __func__ << " out " << start << "~" << m[start] << dendl;
+    if (offset - start) {
+      // we are seeing a hole, time to add an entry to fiemap.
+      m[start] = offset - start;
+      dout(20) << __func__ << " out " << start << "~" << m[start] << dendl;
+    }
     offset += x_len;
     start = offset;
     len -= x_len;
