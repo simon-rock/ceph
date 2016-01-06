@@ -181,11 +181,7 @@ struct PGPool {
  *
  */
 
-class PG {
-public:
-  std::string gen_prefix() const;
-
-  /*** PG ****/
+class PG : DoutPrefixProvider {
 protected:
   OSDService *osd;
   CephContext *cct;
@@ -194,6 +190,11 @@ protected:
 
   virtual PGBackend *get_pgbackend() = 0;
 public:
+  std::string gen_prefix() const;
+  CephContext *get_cct() const { return cct; }
+  unsigned get_subsys() const { return ceph_subsys_osd; }
+
+  /*** PG ****/
   void update_snap_mapper_bits(uint32_t bits) {
     snap_mapper.update_bits(bits);
   }
@@ -913,10 +914,14 @@ public:
     list<pg_log_entry_t> to_rollback;
     set<hobject_t, hobject_t::BitwiseComparator> to_remove;
     list<pg_log_entry_t> to_trim;
+    list<pair<hobject_t, version_t> > to_stash;
     
     // LogEntryHandler
     void remove(const hobject_t &hoid) {
       to_remove.insert(hoid);
+    }
+    void stash(const hobject_t &hoid, version_t v) {
+      to_stash.push_back(make_pair(hoid, v));
     }
     void rollback(const pg_log_entry_t &entry) {
       to_rollback.push_back(entry);
@@ -933,6 +938,11 @@ public:
 	pg->get_pgbackend()->rollback(j->soid, j->mod_desc, t);
 	SnapRollBacker rollbacker(j->soid, pg, t);
 	j->mod_desc.visit(&rollbacker);
+      }
+      for (list<pair<hobject_t, version_t> >::iterator i = to_stash.begin();
+	   i != to_stash.end();
+	   ++i) {
+	pg->get_pgbackend()->stash(i->first, i->second, t);
       }
       for (set<hobject_t, hobject_t::BitwiseComparator>::iterator i = to_remove.begin();
 	   i != to_remove.end();
@@ -2219,8 +2229,19 @@ public:
 
   /// share pg info after a pg is active
   void share_pg_info();
+
+
+  void append_log_entries_update_missing(
+    const list<pg_log_entry_t> &entries,
+    Context *on_local_complete);
+
   /// share new pg log entries after a pg is active
-  void share_pg_log();
+  void share_new_log_entries(
+    const list<pg_log_entry_t> &entries,
+    Context *on_local_complete);
+
+  void do_update_log_missing(
+    OpRequestRef &op);
 
   void reset_interval_flush();
   void start_peering_interval(

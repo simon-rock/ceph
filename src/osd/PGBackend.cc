@@ -80,6 +80,18 @@ void PGBackend::rollback(
 }
 
 
+void PGBackend::stash(
+  const hobject_t &hoid,
+  version_t v,
+  ObjectStore::Transaction *t)
+{
+  t->collection_move_rename(
+    coll,
+    ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+    coll,
+    ghobject_t(hoid, v, get_parent()->whoami_shard().shard));
+}
+
 void PGBackend::on_change_cleanup(ObjectStore::Transaction *t)
 {
   dout(10) << __func__ << dendl;
