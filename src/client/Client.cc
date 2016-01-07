@@ -82,6 +82,7 @@ using namespace std;
 #include "common/perf_counters.h"
 #include "common/admin_socket.h"
 #include "common/errno.h"
+#include "include/str_list.h"
 
 #define dout_subsys ceph_subsys_client
 
@@ -1576,7 +1577,7 @@ int Client::make_request(MetaRequest *request,
     request->resend_mds = use_mds;
 
   while (1) {
-    if (request->aborted)
+    if (request->aborted())
       break;
 
     // set up wait cond
@@ -1611,6 +1612,11 @@ int Client::make_request(MetaRequest *request,
       if (session->state == MetaSession::STATE_OPENING) {
 	ldout(cct, 10) << "waiting for session to mds." << mds << " to open" << dendl;
 	wait_on_context_list(session->waiting_for_open);
+        // Abort requests on REJECT from MDS
+        if (rejected_by_mds.count(mds)) {
+          request->abort(-EPERM);
+          break;
+        }
 	continue;
       }
 
@@ -1638,12 +1644,12 @@ int Client::make_request(MetaRequest *request,
   }
 
   if (!request->reply) {
-    assert(request->aborted);
+    assert(request->aborted());
     assert(!request->got_unsafe);
     request->item.remove_myself();
     unregister_request(request);
     put_request(request); // ours
-    return -ETIMEDOUT;
+    return request->get_abort_code();
   }
 
   // got it!
@@ -1857,9 +1863,25 @@ void Client::populate_metadata()
   // Ceph entity id (the '0' in "client.0")
   metadata["entity_id"] = cct->_conf->name.get_id();
 
+  // Our mount position
+  metadata["root"] = cct->_conf->client_mountpoint;
+
   // Ceph version
   metadata["ceph_version"] = pretty_version_to_str();
   metadata["ceph_sha1"] = git_version_to_str();
+
+  // Apply any metadata from the user's configured overrides
+  std::vector<std::string> tokens;
+  get_str_vec(cct->_conf->client_metadata, ",", tokens);
+  for (const auto &i : tokens) {
+    auto eqpos = i.find("=");
+    // Throw out anything that isn't of the form "<str>=<str>"
+    if (eqpos == 0 || eqpos == std::string::npos || eqpos == i.size()) {
+      lderr(cct) << "Invalid metadata keyval pair: '" << i << "'" << dendl;
+      continue;
+    }
+    metadata[i.substr(0, eqpos)] = i.substr(eqpos + 1);
+  }
 }
 
 /**
@@ -1889,6 +1911,21 @@ MetaSession *Client::_open_mds_session(mds_rank_t mds)
   session->con = messenger->get_connection(session->inst);
   session->state = MetaSession::STATE_OPENING;
   mds_sessions[mds] = session;
+
+  // Maybe skip sending a request to open if this MDS daemon
+  // has previously sent us a REJECT.
+  if (rejected_by_mds.count(mds)) {
+    if (rejected_by_mds[mds] == session->inst) {
+      ldout(cct, 4) << "_open_mds_session mds." << mds << " skipping "
+                       "because we were rejected" << dendl;
+      return session;
+    } else {
+      ldout(cct, 4) << "_open_mds_session mds." << mds << " old inst "
+                       "rejected us, trying with new inst" << dendl;
+      rejected_by_mds.erase(mds);
+    }
+  }
+
   MClientSession *m = new MClientSession(CEPH_SESSION_REQUEST_OPEN);
   m->client_meta = metadata;
   session->con->send_message(m);
@@ -1963,6 +2000,12 @@ void Client::handle_client_session(MClientSession *m)
 
   case CEPH_SESSION_FORCE_RO:
     force_session_readonly(session);
+    break;
+
+  case CEPH_SESSION_REJECT:
+    rejected_by_mds[session->mds_num] = session->inst;
+    _closed_mds_session(session);
+
     break;
 
   default:
@@ -5557,7 +5600,7 @@ void Client::tick()
   if (!mounted && !mds_requests.empty()) {
     MetaRequest *req = mds_requests.begin()->second;
     if (req->op_stamp + cct->_conf->client_mount_timeout < now) {
-      req->aborted = true;
+      req->abort(-ETIMEDOUT);
       if (req->caller_cond) {
 	req->kick = true;
 	req->caller_cond->Signal();
