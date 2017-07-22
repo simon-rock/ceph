@@ -82,8 +82,8 @@ public:
 
   shared_ptr<Graylog> graylog() { return m_graylog; }
 
-  Entry *create_entry(int level, int subsys);
-  Entry *create_entry(int level, int subsys, size_t* expected_size);
+  Entry *create_entry(int level, int subsys, short line, const char* file);// for log, by simon
+  Entry *create_entry(int level, int subsys, short line, const char* file, size_t* expected_size);// for log, by simon
   void submit_entry(Entry *e);
 
   void start();

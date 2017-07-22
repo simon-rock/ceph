@@ -222,12 +222,13 @@ void Log::submit_entry(Entry *e)
 }
 
 
-Entry *Log::create_entry(int level, int subsys)
+Entry *Log::create_entry(int level, int subsys, short line, const char*file)
 {
   if (true) {
     return new Entry(ceph_clock_now(),
 		     pthread_self(),
-		     level, subsys);
+		     level, subsys,
+		     line, file);// for log, by simon
   } else {
     // kludge for perf testing
     Entry *e = m_recent.dequeue();
@@ -239,7 +240,7 @@ Entry *Log::create_entry(int level, int subsys)
   }
 }
 
-Entry *Log::create_entry(int level, int subsys, size_t* expected_size)
+Entry *Log::create_entry(int level, int subsys, short line, const char* file, size_t* expected_size)
 {
   if (true) {
     ANNOTATE_BENIGN_RACE_SIZED(expected_size, sizeof(*expected_size),
@@ -247,8 +248,9 @@ Entry *Log::create_entry(int level, int subsys, size_t* expected_size)
     size_t size = __atomic_load_n(expected_size, __ATOMIC_RELAXED);
     void *ptr = ::operator new(sizeof(Entry) + size);
     return new(ptr) Entry(ceph_clock_now(),
-       pthread_self(), level, subsys,
-       reinterpret_cast<char*>(ptr) + sizeof(Entry), size, expected_size);
+			  pthread_self(), level, subsys,
+			  line, file,// for log, by simon
+			  reinterpret_cast<char*>(ptr) + sizeof(Entry), size, expected_size);
   } else {
     // kludge for perf testing
     Entry *e = m_recent.dequeue();
@@ -314,7 +316,7 @@ void Log::_flush(EntryQueue *t, EntryQueue *requeue, bool crash)
       buflen += e->m_stamp.sprintf(buf + buflen, buf_size-buflen);
       buflen += snprintf(buf + buflen, buf_size-buflen, " %lx %2d ",
 			(unsigned long)e->m_thread, e->m_prio);
-
+      buflen += snprintf(buf + buflen, sizeof(buf)-buflen, " %s:%d ", e->m_file, e->m_line); // for log, by simon
       buflen += e->snprintf(buf + buflen, buf_size - buflen - 1);
       if (buflen > buf_size - 1) { //paranoid check, buf was declared
 				   //to hold everything
