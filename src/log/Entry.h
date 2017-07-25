@@ -18,7 +18,7 @@ struct Entry {
   pthread_t m_thread;
   short m_prio, m_subsys;
   short m_line;           // for log, by simon
-  char m_file[40];         // for log, by simon
+  char m_file[250];         // for log, by simon
   Entry *m_next;
 
   PrebufferedStreambuf m_streambuf;
@@ -100,7 +100,7 @@ struct Entry {
 
   // returns current size of content
   size_t size() const {
-    return m_streambuf.size();
+    return m_streambuf.size() + strlen(m_file) + 15; // add _FILE_ and _LINE_, by simon
   }
 
   // extracts up to avail chars of content
