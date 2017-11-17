@@ -2459,6 +2459,63 @@ int apply_layout_settings(ObjectStore *os, const OSDSuperblock &superblock,
   return r;
 }
 
+void split_string(const string& s, vector<string>& v, const string& c)
+{
+
+  string::size_type pos1, pos2;
+  pos2 = s.find(c);
+  pos1 = 0;
+  while(string::npos != pos2)
+    {
+
+      v.push_back(s.substr(pos1, pos2-pos1));
+
+      pos1 = pos2 + c.size();
+      pos2 = s.find(c, pos1);
+    }
+  if(pos1 != s.length())
+    v.push_back(s.substr(pos1));
+}
+
+vector<string> split(const string &s, const string &seperator){
+
+  vector<string> result;
+  typedef string::size_type string_size;
+  string_size i = 0;
+  while(i != s.size()){
+    int flag = 0;
+    while(i != s.size() && flag == 0){
+
+      flag = 1;
+      for(string_size x = 0; x < seperator.size(); ++x)
+	if(s[i] == seperator[x]){
+	  
+	  ++i;
+	  flag = 0;
+	  break;
+	}
+    }
+
+    flag = 0;
+    string_size j = i;
+    while(j != s.size() && flag == 0){
+      for(string_size x = 0; x < seperator.size(); ++x)
+	if(s[j] == seperator[x]){
+	  
+	  flag = 1;
+	  break;
+	}
+      if(flag == 0)
+	++j;
+    }
+    if(i != j){
+
+      result.push_back(s.substr(i, j-i));
+      i = j;
+    }
+  }
+  return result;
+}
 int main(int argc, char **argv)
 {
   string dpath, jpath, pgidstr, op, file, mountpoint, mon_store_path, object;
@@ -2472,7 +2529,9 @@ int main(int argc, char **argv)
   bool force;
   Formatter *formatter;
   bool head;
-
+  bool resetattr;   // add by simon
+  string dirpath;   // add by simon
+   
   po::options_description desc("Allowed options");
   desc.add_options()
     ("help", "produce help message")
@@ -2488,7 +2547,7 @@ int main(int argc, char **argv)
      "Pool name, mandatory for apply-layout-settings if --pgid is not specified")
     ("op", po::value<string>(&op),
      "Arg is one of [info, log, remove, mkfs, fsck, fuse, dup, export, import, list, fix-lost, list-pgs, rm-past-intervals, dump-journal, dump-super, meta-list, "
-     "get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, apply-layout-settings, update-mon-db]")
+     "get-osdmap, set-osdmap, get-inc-osdmap, set-inc-osdmap, mark-complete, apply-layout-settings, update-mon-db, listattr]")
     ("epoch", po::value<unsigned>(&epoch),
      "epoch# for get-osdmap and get-inc-osdmap, the current epoch in use if not specified")
     ("file", po::value<string>(&file),
@@ -2510,8 +2569,10 @@ int main(int argc, char **argv)
     ("head", "Find head/snapdir when searching for objects by name")
     ("dry-run", "Don't modify the objectstore")
     ("namespace", po::value<string>(&argnspace), "Specify namespace when searching for objects")
+    ("dirpath", po::value<string>(&dirpath)->default_value(""), "sp dir in pg, for get attr of it, e.g. DIR_5/DIR6 is \"5/6\"") // add by simon, for listattr 
+    ("resetattr", po::value<bool>(&resetattr)->default_value(false), "if reset the attr,default is false") // add by simon, for listattr 
     ;
-
+  // new op, listattr e.g. --data-path /var/lib/ceph/osd/ceph-46 --journal-path /var/lib/ceph/osd/ceph-46/journal  --pgid 2.3afe --op listattr  --dirpath 5/6 --debug
   po::options_description positional("Positional options");
   positional.add_options()
     ("object", po::value<string>(&object), "'' for pgmeta_oid, object name or ghobject in json")
@@ -2725,7 +2786,31 @@ int main(int argc, char **argv)
     cerr << "Invalid pgid '" << pgidstr << "' specified" << std::endl;
     return 1;
   }
-
+  // add by simon 
+  if(op == "listattr"){
+    string dname = pgidstr+"_head";
+    string basedir = dpath+"/current/"+dname;
+    cout << "\nlistattr " << basedir << " (reset : "<< resetattr<< ")"<< std::endl;
+    coll_t c;
+    c.parse(dname);
+    // CollectionIndex *index;
+    HashIndex *index= new HashIndex(g_ceph_context, c, basedir.c_str(),
+			     1000,
+			     4, CollectionIndex::HOBJECT_WITH_POOL);
+    cout << "\ndirpath=" << dirpath << std::endl;
+    vector<string> path;
+    string sc = "/";
+    if (dirpath != ""){
+      split_string(dirpath, path, sc);
+    }
+    for (vector<string>::iterator item = path.begin() ; item != path.end() ; ++item)
+      cout << *item << " - ";
+    int r = index->show_attr(path, resetattr);
+    cout << "\nlistattr r="<< r << std::endl;
+    delete index;
+    return 0;
+  }
+  // end by simon
   ObjectStore *fs = ObjectStore::create(g_ceph_context, type, dpath, jpath, flags);
   if (fs == NULL) {
     cerr << "Unable to create store of type " << type << std::endl;

@@ -91,6 +91,7 @@ bool cmp_hexdigit_string_bitwise(const string& l, const string& r)
 }
 
 int HashIndex::cleanup() {
+  dout(10) << "-simon-" << __func__ << dendl;
   bufferlist bl;
   int r = get_attr_path(vector<string>(), IN_PROGRESS_OP_TAG, bl);
   if (r < 0) {
@@ -150,7 +151,45 @@ int HashIndex::reset_attr(
   info.subdirs = subdirs.size();
   return set_info(path, info);
 }
-
+// only for debug or fix issue , add by simon
+int HashIndex::show_attr(
+		const vector<string> &path, ///< [in] path to cleanup
+		bool reset
+	      ){
+  int exists = 0;
+  int r = path_exists(path, &exists);
+  if (r < 0)
+    return r;
+  if (!exists)
+    return 0;
+  map<string, ghobject_t> objects;
+  vector<string> subdirs;
+  r = list_objects(path, 0, 0, &objects);
+  dout(0) << "-simon-" << __func__ << " r="<< r << " object_size=" << objects.size() <<dendl;
+  if (r < 0)
+    return r;
+  r = list_subdirs(path, &subdirs);
+  dout(0) << "-simon-" << __func__ << " r="<< r << " subdirs_size=" << subdirs.size() <<dendl;
+  if (r < 0)
+    return r;
+  if (reset){
+    subdir_info_s info;
+    info.hash_level = path.size();
+    info.objs = objects.size();
+    info.subdirs = subdirs.size();
+    return set_info(path, info);  
+  }
+  else{
+    subdir_info_s info;
+    get_info(path, &info);
+    dout(0) << "-simon-" << __func__ << " r="<< r << " have_level="<< info.hash_level << " info.objs="<< info.objs << " info.subdirs=" << info.subdirs <<dendl;
+    info.hash_level = path.size();
+    info.objs = objects.size();
+    info.subdirs = subdirs.size();
+    return 0;
+  }
+  
+}
 int HashIndex::col_split_level(
   HashIndex &from,
   HashIndex &to,
@@ -372,6 +411,11 @@ int HashIndex::_init() {
 int HashIndex::_created(const vector<string> &path,
 			const ghobject_t &oid,
 			const string &mangled_name) {
+  dout(0) << "-simon-"<< __func__ << " split multiple = " << split_multiplier
+	   << " merge threshold = " << merge_threshold
+	   << " oid = " << oid
+	   << " mangled_name = " << mangled_name
+	   << dendl;
   subdir_info_s info;
   int r;
   r = get_info(path, &info);
@@ -381,7 +425,7 @@ int HashIndex::_created(const vector<string> &path,
   r = set_info(path, info);
   if (r < 0)
     return r;
-
+  dout(0) << "-simon-"<< __func__ << " check split " << dendl;
   if (must_split(info)) {
     dout(1) << __func__ << " " << path << " has " << info.objs
             << " objects, starting split." << dendl;
@@ -400,6 +444,7 @@ int HashIndex::_created(const vector<string> &path,
 int HashIndex::_remove(const vector<string> &path,
 		       const ghobject_t &oid,
 		       const string &mangled_name) {
+  dout(10) << "-simon-"<< __func__ << " oid" << oid << " mangled_name" << mangled_name << dendl;
   int r;
   r = remove_object(path, oid);
   if (r < 0)
@@ -413,6 +458,7 @@ int HashIndex::_remove(const vector<string> &path,
   if (r < 0)
     return r;
   if (must_merge(info)) {
+    dout(10) << "-simon-"<< __func__ << " initiate_merge ret= " << r << dendl;
     r = initiate_merge(path, info);
     if (r < 0)
       return r;
@@ -669,6 +715,7 @@ int HashIndex::start_merge(const vector<string> &path) {
   InProgressOp op_tag(InProgressOp::MERGE, path);
   op_tag.encode(bl);
   int r = add_attr_path(vector<string>(), IN_PROGRESS_OP_TAG, bl);
+  dout(10) << "-simon-"<< __func__ << " "<< IN_PROGRESS_OP_TAG << " " << bl << " add_attr_path ret= " << r <<dendl;
   if (r < 0)
     return r;
   return fsync_dir(vector<string>());
@@ -697,6 +744,7 @@ int HashIndex::set_info(const vector<string> &path, const subdir_info_s &info) {
 }
 
 bool HashIndex::must_merge(const subdir_info_s &info) {
+  dout(10) << "-simon-"<< __func__ << " info.objs "<< info.objs << " merge_threshold "<< merge_threshold << "(hash_level:"<< info.hash_level << " subdirs:"<< info.subdirs <<")"<< dendl;
   return (info.hash_level > 0 &&
           merge_threshold > 0 &&
 	  info.objs < (unsigned)merge_threshold &&
@@ -704,6 +752,7 @@ bool HashIndex::must_merge(const subdir_info_s &info) {
 }
 
 bool HashIndex::must_split(const subdir_info_s &info) {
+  dout(10) << "-simon-"<< __func__ << " info.objs "<< info.objs << " merge_threshold "<< merge_threshold << " split_multipli "<< split_multiplier << dendl;
   return (info.hash_level < (unsigned)MAX_HASH_LEVEL &&
 	  info.objs > ((unsigned)(abs(merge_threshold)) * 16 * split_multiplier));
 
@@ -714,6 +763,7 @@ int HashIndex::initiate_merge(const vector<string> &path, subdir_info_s info) {
 }
 
 int HashIndex::complete_merge(const vector<string> &path, subdir_info_s info) {
+  dout(10) << "-simon-"<< __func__ << dendl;
   vector<string> dst = path;
   dst.pop_back();
   subdir_info_s dstinfo;
@@ -755,6 +805,7 @@ int HashIndex::initiate_split(const vector<string> &path, subdir_info_s info) {
 }
 
 int HashIndex::complete_split(const vector<string> &path, subdir_info_s info) {
+  dout(10) << "-simon-"<< __func__ << dendl;
   int level = info.hash_level;
   map<string, ghobject_t> objects;
   vector<string> dst = path;

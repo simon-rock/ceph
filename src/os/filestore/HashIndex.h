@@ -163,7 +163,12 @@ public:
 
   /// @see CollectionIndex
   int apply_layout_settings() override;
-
+  // only for debug or fix issue , add by simon
+  // for reset info of pg, add by simon
+  int show_attr(
+		const vector<string> &path, ///< [in] path to cleanup
+		bool reset = false
+		);
 protected:
   int _init() override;
 
