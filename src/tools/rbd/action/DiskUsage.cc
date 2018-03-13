@@ -154,7 +154,7 @@ static int do_disk_usage(librbd::RBD &rbd, librados::IoCtx &io_ctx,
                 << cpp_strerror(r) << std::endl;
       continue;
     }
-
+    std::cerr << "--simon-- rbd: open ok " << *name << " snapshots: "<< std::endl;
     bool found_from_snap = (from_snapname == nullptr);
     std::string last_snap_name;
     std::sort(snap_list.begin(), snap_list.end(),
@@ -170,7 +170,8 @@ static int do_disk_usage(librbd::RBD &rbd, librados::IoCtx &io_ctx,
                   << snap->name << ": " << cpp_strerror(r) << std::endl;
         goto out;
       }
-
+      std::cerr << "--simon-- rbd: open ok snapshot " << *name << "@"
+		<< snap->name << ": " << std::endl;
       if (imgname == nullptr || found_from_snap ||
          (found_from_snap && snapname != nullptr && snap->name == snapname)) {
         r = compute_image_disk_usage(*name, snap->name, last_snap_name,
