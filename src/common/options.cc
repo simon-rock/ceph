@@ -1500,6 +1500,12 @@ std::vector<Option> get_global_options() {
     .set_description("do not automatically mark OSDs 'out' if an entire subtree of this size is down")
     .add_see_also("mon_osd_down_out_interval"),
 
+    Option("mon_max_span_of_incremental", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(100)
+    .set_flag(Option::FLAG_RUNTIME)
+    .add_service("mon")
+    .set_description("max span when build incremental map"),
+
     Option("mon_osd_min_up_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(.3)
     .add_service("mon")

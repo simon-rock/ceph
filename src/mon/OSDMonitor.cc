@@ -4764,9 +4764,15 @@ void OSDMonitor::check_osdmap_subs()
 void OSDMonitor::check_osdmap_sub(Subscription *sub)
 {
   dout(10) << __func__ << " " << sub << " next " << sub->next
-	   << (sub->onetime ? " (onetime)":" (ongoing)") << dendl;
+	   << (sub->onetime ? " (onetime)":" (ongoing)")
+	   << " epoch: " << osdmap.get_epoch()
+	   << " type: " << sub->session->name
+	   << dendl;
   if (sub->next <= osdmap.get_epoch()) {
-    if (sub->next >= 1)
+    if (sub->next >= 1 &&
+	(sub->session->name.is_osd() ||
+	 (osdmap.get_epoch() - sub->next) < g_conf().get_val<uint64_t>("mon_max_span_of_incremental"))
+	)
       send_incremental(sub->next, sub->session, sub->incremental_onetime);
     else
       sub->session->con->send_message(build_latest_full(sub->session->con_features));
